@@ -1,0 +1,224 @@
+# Load necessary libraries
+library(shiny)
+library(shinythemes)
+library(dplyr)
+library(DT)
+library(plotly)
+library(lubridate)
+library(readr)
+library(writexl)
+
+# Define UI
+ui <- fluidPage(
+  theme = shinytheme("spacelab"),
+  tags$head(
+    tags$style(HTML("
+       body { background-color: #f7f9fc; }
+       .title { font-size: 28px; font-weight: bold; color: #34495e; margin-bottom: 20px; }
+       .section-label { font-size: 18px; font-weight: bold; color: #2c3e50; margin-top: 20px; margin-bottom: 10px; }
+       .pastel-box { background-color: #ffffff; padding: 20px; border-radius: 10px; box-shadow: 2px 2px 10px #e3e3e3; }
+       .btn-success { background-color: #2ecc71; border-color: #27ae60; }
+       .btn-warning { background-color: #f39c12; border-color: #e67e22; }
+       .btn-info { background-color: #3498db; border-color: #2980b9; }
+       .btn-danger { background-color: #e74c3c; border-color: #c0392b; }
+       table.dataTable tbody td { border-bottom: 1px solid #ddd; } 
+       table.dataTable thead th { background-color: #ecf0f1; }
+     "))
+  ),
+  
+  titlePanel(div("📱 LOAD, GCASH, PRODUCT & SALES TRACKER 📈", class = "title")),
+  
+  sidebarLayout(
+    sidebarPanel(
+      div(class = "pastel-box",
+          dateInput("g_date", "📅 Date:", value = Sys.Date()),
+          textInput("g_customer", "👤 Customer's Name:"),
+          textInput("g_number", "📱 Customer Number (0900 000 0000):"),
+          selectInput("g_type", "🔄 Transaction Type:", choices = c("Gcash in", "Gcash out", "Load")),
+          numericInput("g_amount", "💵 Amount:", value = NULL),
+          numericInput("g_total", "💵 Amount with Charge:", value = NULL),
+          actionButton("g_save", "💾 Save Transaction", class = "btn-success"),
+          br(), br(),
+          actionButton("g_undo", "↩️ Undo", class = "btn-warning"),
+          actionButton("g_redo", "↪️ Redo", class = "btn-info"),
+          br(), br(),
+          downloadButton("g_download_csv", "📥 Download CSV"),
+          downloadButton("g_download_excel", "📥 Download Excel")
+      )
+    ),
+    
+    mainPanel(
+      div(class = "pastel-box",
+          h3("📋 Transactions Record"),
+          DTOutput("g_table"),
+          
+          br(), br(),  # dagdag space
+          
+          div(class = "section-label", "📊 Summary of Today's Profit (Per Category)"),
+          tableOutput("g_summary"),
+          
+          br(), br(),  # dagdag space
+          
+          fluidRow(
+            column(6,
+                   div(class = "section-label", "📊 Highest Transaction (Bar Graph)"),
+                   plotlyOutput("g_bar_transaction", height = "250px")
+            ),
+            column(6,
+                   div(class = "section-label", "💰 Today's Profit (Pie Graph)"),
+                   plotlyOutput("g_pie_profit", height = "250px")
+            )
+          )
+      )
+    )
+  )
+)
+
+# Define Server
+server <- function(input, output, session) {
+  
+  g_data <- reactiveVal(data.frame(
+    Date = as.Date(character()),
+    CustomerName = character(),
+    Number = character(),
+    TransactionType = character(),
+    Amount = numeric(),
+    AmountWithCharge = numeric(),
+    Profit = numeric(),
+    stringsAsFactors = FALSE
+  ))
+  
+  undo_stack <- reactiveVal(list())
+  redo_stack <- reactiveVal(list())
+  
+  observeEvent(input$g_save, {
+    req(input$g_customer, input$g_number, input$g_type, input$g_amount, input$g_total)
+    
+    if (!grepl("^09\\d{2} \\d{3} \\d{4}$", input$g_number)) {
+      showNotification("❗ Invalid Number Format! Use 0900 000 0000.", type = "error")
+      return()
+    }
+    
+    new_entry <- data.frame(
+      Date = input$g_date,
+      CustomerName = input$g_customer,
+      Number = input$g_number,
+      TransactionType = input$g_type,
+      Amount = input$g_amount,
+      AmountWithCharge = input$g_total,
+      Profit = input$g_total - input$g_amount,
+      stringsAsFactors = FALSE
+    )
+    
+    undo_stack(append(undo_stack(), list(g_data())))
+    redo_stack(list())
+    
+    g_data(rbind(g_data(), new_entry))
+  })
+  
+  observeEvent(input$g_undo, {
+    prev <- undo_stack()
+    if (length(prev) > 0) {
+      redo_stack(append(list(g_data()), redo_stack()))
+      g_data(prev[[length(prev)]])
+      undo_stack(prev[-length(prev)])
+    }
+  })
+  
+  observeEvent(input$g_redo, {
+    nxt <- redo_stack()
+    if (length(nxt) > 0) {
+      undo_stack(append(undo_stack(), list(g_data())))
+      g_data(nxt[[1]])
+      redo_stack(nxt[-1])
+    }
+  })
+  
+  observeEvent(input$g_table_cell_clicked, {
+    info <- input$g_table_cell_clicked
+    if (!is.null(info$value) && info$col == ncol(g_data()) + 1) {
+      selected_row <- info$row
+      data_now <- g_data()
+      undo_stack(append(undo_stack(), list(data_now)))
+      redo_stack(list())
+      data_now <- data_now[-selected_row, ]
+      g_data(data_now)
+    }
+  })
+  
+  output$g_table <- renderDT({
+    data <- g_data()
+    if (nrow(data) > 0) {
+      data$Delete <- sapply(seq_len(nrow(data)), function(i) {
+        as.character(actionButton(inputId = paste0("delete_", i), label = "Delete", class = "btn-danger btn-sm"))
+      })
+    }
+    
+    datatable(
+      data, 
+      escape = FALSE, 
+      selection = 'none', 
+      editable = FALSE, 
+      options = list(pageLength = 5, 
+                     autoWidth = TRUE,
+                     columnDefs = list(list(className = 'dt-center', targets = "_all")))
+    )
+  }, server = FALSE)
+  
+  output$g_summary <- renderTable({
+    req(nrow(g_data()) > 0)
+    summary_table <- g_data() %>%
+      group_by(TransactionType) %>%
+      summarise(TotalProfit = sum(Profit)) %>%
+      as.data.frame()
+    
+    total_row <- data.frame(TransactionType = "TOTAL", TotalProfit = sum(summary_table$TotalProfit))
+    rbind(summary_table, total_row)
+  })
+  
+  output$g_bar_transaction <- renderPlotly({
+    req(nrow(g_data()) > 0)
+    colors_bar <- c('dodgerblue', 'cyan', 'blue')
+    plot_ly(
+      data = g_data() %>%
+        group_by(TransactionType) %>%
+        summarise(Total = sum(AmountWithCharge)),
+      x = ~TransactionType,
+      y = ~Total,
+      type = 'bar',
+      marker = list(color = colors_bar)
+    ) %>%
+      layout(title = "Highest Transactions (Bar)")
+  })
+  
+  output$g_pie_profit <- renderPlotly({
+    req(nrow(g_data()) > 0)
+    colors_pie <- c('palegreen', 'springgreen', 'green')
+    plot_ly(
+      data = g_data(),
+      labels = ~TransactionType,
+      values = ~Profit,
+      type = 'pie',
+      textinfo = 'label+percent',
+      marker = list(colors = colors_pie)
+    ) %>%
+      layout(title = "Today's Profit (Pie)")
+  })
+  
+  output$g_download_csv <- downloadHandler(
+    filename = function() { paste0("Gcash_Transactions_", Sys.Date(), ".csv") },
+    content = function(file) {
+      write_csv(g_data(), file)
+    }
+  )
+  
+  output$g_download_excel <- downloadHandler(
+    filename = function() { paste0("Gcash_Transactions_", Sys.Date(), ".xlsx") },
+    content = function(file) {
+      write_xlsx(g_data(), path = file)
+    }
+  )
+}
+
+# Run the app
+shinyApp(ui, server)
