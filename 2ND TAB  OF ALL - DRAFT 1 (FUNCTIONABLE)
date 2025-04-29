@@ -1,0 +1,206 @@
+# Load necessary libraries
+library(shiny)
+library(readxl)
+library(writexl)
+library(DT)
+library(ggplot2)
+library(shinyjs)
+library(dplyr)
+library(plotly)
+
+# INSTRUCTIONS:
+# Ensure the Excel file 'STORE_JAVIER.xlsx' is in the working directory
+excel_file <- "C:/Users/Jhon lowell Daculan/Downloads/STORE_JAVIER.xlsx" 
+sheet_names <- excel_sheets(excel_file)
+product_data <- lapply(sheet_names, function(sheet) read_excel(excel_file, sheet = sheet))
+names(product_data) <- sheet_names
+
+# Function to clean sheet names to category labels
+clean_category <- function(sheet_name) {
+  gsub("[.]", "", toupper(trimws(sheet_name)))
+}
+
+categories <- setNames(sheet_names, sapply(sheet_names, clean_category))
+
+# Initialize reactive sales data
+sales_data <- data.frame(
+  Date = as.Date(character()),
+  Category = character(),
+  Product = character(),
+  Quantity = numeric(),
+  Unit_Cost = numeric(),
+  Unit_Price = numeric(),
+  Profit = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# UI
+ui <- fluidPage(
+  useShinyjs(),
+  titlePanel("🛒 Store Sales Tracker"),
+  
+  fluidRow(
+    column(8,
+           DTOutput("sales_table"),
+           br(),
+           plotlyOutput("bar_graph"),
+           br(),
+           plotlyOutput("pie_chart"),
+           br(),
+           h4("📊 Profit Summary per Category (Today):"),
+           tableOutput("summary_table"),
+           h2(textOutput("total_profit"))
+    ),
+    column(4,
+           selectInput("category", "📦 Product Category", choices = names(categories)),
+           uiOutput("product_ui"),
+           numericInput("quantity", "🔢 Quantity", value = 1, min = 1),
+           actionButton("add_row", "➕ Add and Record Sales"),
+           br(), br(),
+           actionButton("delete_row", "🗑️ Delete Row"),
+           actionButton("undo_btn", "↩️ Undo"),
+           actionButton("redo_btn", "↪️ Redo"),
+           br(), br(),
+           downloadButton("save_excel", "💾 Save as Excel"),
+           downloadButton("save_csv", "📄 Save as CSV")
+    )
+  )
+)
+
+# Server
+server <- function(input, output, session) {
+  # Reactive values
+  values <- reactiveValues(
+    data = sales_data,
+    undo = list(),
+    redo = list()
+  )
+  
+  # Dynamic product options based on category
+  output$product_ui <- renderUI({
+    req(input$category)
+    products <- product_data[[categories[input$category]]]$`Product Name`
+    selectInput("product", "🏷️ Brand/Product", choices = products)
+  })
+  
+  # Add sale entry
+  observeEvent(input$add_row, {
+    req(input$category, input$product, input$quantity)
+    df <- product_data[[categories[input$category]]]
+    selected <- df[df$`Product Name` == input$product, ]
+    if (nrow(selected) == 0) return()
+    
+    unit_cost <- selected$`Unit Cost (PHP)`
+    unit_price <- selected$`Unit Price (PHP)`
+    profit <- (unit_price - unit_cost) * input$quantity
+    
+    new_row <- data.frame(
+      Date = Sys.Date(),
+      Category = input$category,
+      Product = input$product,
+      Quantity = input$quantity,
+      Unit_Cost = unit_cost,
+      Unit_Price = unit_price,
+      Profit = profit,
+      stringsAsFactors = FALSE
+    )
+    
+    # Save state for undo
+    values$undo <- append(values$undo, list(values$data))
+    values$data <- rbind(values$data, new_row)
+  })
+  
+  # Delete selected row
+  observeEvent(input$delete_row, {
+    sel <- input$sales_table_rows_selected
+    if (length(sel) > 0) {
+      values$undo <- append(values$undo, list(values$data))
+      values$data <- values$data[-sel, ]
+    }
+  })
+  
+  # Undo and Redo
+  observeEvent(input$undo_btn, {
+    if (length(values$undo) > 0) {
+      values$redo <- append(values$redo, list(values$data))
+      values$data <- tail(values$undo, 1)[[1]]
+      values$undo <- head(values$undo, -1)
+    }
+  })
+  
+  observeEvent(input$redo_btn, {
+    if (length(values$redo) > 0) {
+      values$undo <- append(values$undo, list(values$data))
+      values$data <- tail(values$redo, 1)[[1]]
+      values$redo <- head(values$redo, -1)
+    }
+  })
+  
+  # Sales table output
+  output$sales_table <- renderDT({
+    datatable(values$data, selection = "single")
+  })
+  
+  # Save as Excel and CSV
+  output$save_excel <- downloadHandler(
+    filename = function() {
+      paste("Sales_", Sys.Date(), ".xlsx", sep = "")
+    },
+    content = function(file) {
+      write_xlsx(values$data, file)
+    }
+  )
+  
+  output$save_csv <- downloadHandler(
+    filename = function() {
+      paste("Sales_", Sys.Date(), ".csv", sep = "")
+    },
+    content = function(file) {
+      write.csv(values$data, file, row.names = FALSE)
+    }
+  )
+  
+  # Summary Table
+  output$summary_table <- renderTable({
+    values$data %>% 
+      filter(Date == Sys.Date()) %>% 
+      group_by(Category) %>% 
+      summarise(Total_Profit = sum(Profit))
+  })
+  
+  # Total Profit
+  output$total_profit <- renderText({
+    total_profit <- values$data %>% filter(Date == Sys.Date()) %>% summarise(sum(Profit))[[1]]
+    paste("💰 TOTAL PROFIT TODAY: ₱", format(round(total_profit, 2), big.mark = ","))
+  })
+  
+  # Bar Graph for Highest Sales per Category (Today)
+  output$bar_graph <- renderPlotly({
+    df <- values$data %>% 
+      filter(Date == Sys.Date()) %>% 
+      group_by(Category) %>% 
+      summarise(Total_Sales = sum(Profit))
+    
+    plot_ly(df, x = ~Category, y = ~Total_Sales, type = 'bar', name = 'Sales',
+            marker = list(color = 'rgb(26, 118, 255)')) %>%
+      layout(title = "📈 Highest Sales per Category (Today)",
+             xaxis = list(title = "Category"),
+             yaxis = list(title = "Total Sales"),
+             barmode = 'group')
+  })
+  
+  # Pie Chart for Today's Profit per Category
+  output$pie_chart <- renderPlotly({
+    df <- values$data %>% 
+      filter(Date == Sys.Date()) %>% 
+      group_by(Category) %>% 
+      summarise(Total_Profit = sum(Profit))
+    
+    plot_ly(df, labels = ~Category, values = ~Total_Profit, type = 'pie',
+            textinfo = 'label+percent', insidetextorientation = 'radial') %>%
+      layout(title = '🍰 Today\'s Profit Distribution')
+  })
+}
+
+# Run the app
+shinyApp(ui, server)2BD 
