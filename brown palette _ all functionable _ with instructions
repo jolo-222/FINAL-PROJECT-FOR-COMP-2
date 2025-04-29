@@ -1,0 +1,673 @@
+# Load necessary libraries
+library(shiny)
+library(readxl)
+library(writexl)
+library(DT)
+library(ggplot2)
+library(shinyjs)
+library(dplyr)
+library(plotly)
+library(bslib)
+library(htmltools)
+library(shinyWidgets)
+
+# INSTRUCTIONS:
+# Ensure the Excel file 'STORE_JAVIER.xlsx' is in the working directory
+excel_file <- "C:/Users/Jhon lowell Daculan/Downloads/STORE_JAVIER.xlsx" 
+sheet_names <- excel_sheets(excel_file)
+product_data <- lapply(sheet_names, function(sheet) read_excel(excel_file, sheet = sheet))
+names(product_data) <- sheet_names
+
+# Function to clean sheet names to category labels
+clean_category <- function(sheet_name) {
+  gsub("[.]", "", toupper(trimws(sheet_name)))
+}
+
+categories <- setNames(sheet_names, sapply(sheet_names, clean_category))
+
+# Initialize local storage for persistence
+saveDataPath <- "sales_data.rds"
+
+# Try to load existing data
+if (file.exists(saveDataPath)) {
+  sales_data <- readRDS(saveDataPath)
+} else {
+  # Initialize reactive sales data if no saved data exists
+  sales_data <- data.frame(
+    Date = as.Date(character()),
+    Category = character(),
+    Product = character(),
+    Quantity = numeric(),
+    Unit_Cost = numeric(),
+    Unit_Price = numeric(),
+    Profit = numeric(),
+    stringsAsFactors = FALSE
+  )
+}
+
+# Custom CSS for color palette (lighter browns)
+custom_css <- HTML("
+  :root {
+    --brown-dark: #9C7B54;    /* Lighter dark brown */
+    --brown-medium: #B89168;  /* Medium brown */
+    --brown-light: #D2B48C;   /* Light brown */
+    --brown-lighter: #F5DEB3; /* Wheat/Very light brown */
+    --off-white: #FFFAF0;     /* Floral white */
+  }
+  
+  body {
+    background-color: var(--off-white);
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  }
+  
+  .main-title {
+    color: var(--brown-dark);
+    font-weight: 300;
+    text-align: center;
+    margin-bottom: 30px;
+    font-size: 2.5rem;
+    letter-spacing: 1px;
+  }
+  
+  .card {
+    border-radius: 10px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);
+    margin-bottom: 20px;
+    background-color: white;
+    overflow: hidden;
+  }
+  
+  .card-header {
+    background-color: var(--brown-dark);
+    color: white;
+    font-weight: bold;
+    padding: 12px 20px;
+    border: none;
+  }
+  
+  .card-body {
+    padding: 20px;
+  }
+  
+  .sidebar-card {
+    background-color: var(--brown-lighter);
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  
+  .btn-primary {
+    background-color: var(--brown-dark) !important;
+    border-color: var(--brown-dark) !important;
+    color: white !important;
+    border-radius: 5px;
+    padding: 8px 16px;
+    transition: all 0.3s ease;
+  }
+  
+  .btn-primary:hover {
+    background-color: var(--brown-medium) !important;
+    border-color: var(--brown-medium) !important;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+  }
+  
+  .selectize-input {
+    background-color: white !important;
+    border: 1px solid var(--brown-light) !important;
+    border-radius: 5px !important;
+    box-shadow: none !important;
+    transition: all 0.3s ease;
+  }
+  
+  .selectize-input.focus {
+    border-color: var(--brown-dark) !important;
+    box-shadow: 0 0 0 0.2rem rgba(156, 123, 84, 0.25) !important;
+    transform: scale(1.02);
+  }
+  
+  .selectize-dropdown {
+    background-color: white !important;
+    border: 1px solid var(--brown-light) !important;
+    border-radius: 0 0 5px 5px !important;
+  }
+  
+  .selectize-dropdown-content .option {
+    background-color: white !important;
+    color: var(--brown-dark) !important;
+    transition: all 0.2s ease;
+  }
+  
+  .selectize-dropdown-content .option:hover,
+  .selectize-dropdown-content .option.active {
+    background-color: var(--brown-lighter) !important;
+  }
+  
+  .form-control {
+    border: 1px solid var(--brown-light);
+    border-radius: 5px;
+  }
+  
+  .form-control:focus {
+    border-color: var(--brown-dark);
+    box-shadow: 0 0 0 0.2rem rgba(156, 123, 84, 0.25);
+  }
+  
+  .dataTables_wrapper {
+    padding: 10px;
+    background-color: white;
+    border-radius: 10px;
+  }
+  
+  table.dataTable thead th {
+    background-color: var(--brown-light);
+    color: var(--brown-dark);
+    border-bottom: 2px solid var(--brown-medium) !important;
+  }
+  
+  .dataTables_info, .dataTables_paginate {
+    margin-top: 10px !important;
+    color: var(--brown-dark) !important;
+  }
+  
+  .paginate_button {
+    color: var(--brown-dark) !important;
+  }
+  
+  .paginate_button.current {
+    background: var(--brown-light) !important;
+    border: 1px solid var(--brown-medium) !important;
+  }
+  
+  .summary-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 20px;
+  }
+  
+  .summary-table th {
+    background-color: var(--brown-light);
+    color: var(--brown-dark);
+    text-align: left;
+    padding: 10px;
+  }
+  
+  .summary-table td {
+    padding: 10px;
+    border-bottom: 1px solid var(--brown-lighter);
+  }
+  
+  .total-profit {
+    font-size: 1.5rem;
+    font-weight: bold;
+    color: var(--brown-dark);
+    text-align: right;
+    margin-top: 10px;
+    padding: 10px;
+    background-color: var(--brown-lighter);
+    border-radius: 5px;
+  }
+  
+  .highest-sales {
+    font-size: 1.1rem;
+    color: var(--brown-dark);
+    text-align: center;
+    margin-top: 10px;
+    padding: 10px;
+    background-color: var(--brown-lighter);
+    border-radius: 5px;
+  }
+  
+  .time-period-selector {
+    background-color: var(--brown-light);
+    border-radius: 5px;
+    padding: 10px;
+    margin-bottom: 15px;
+  }
+  
+  .time-period-selector .btn {
+    background-color: white;
+    color: var(--brown-dark);
+    border: 1px solid var(--brown-medium);
+  }
+  
+  .time-period-selector .btn.active {
+    background-color: var(--brown-dark);
+    color: white;
+  }
+  
+  /* Animated select inputs */
+  .selectize-control.single .selectize-input:after {
+    transition: all 0.3s ease;
+  }
+  
+  .selectize-control.single .selectize-input.dropdown-active:after {
+    transform: rotate(180deg);
+  }
+  
+  .selectize-dropdown-content {
+    max-height: 300px;
+    overflow-y: auto;
+    animation: fadeInDown 0.3s ease;
+  }
+  
+  @keyframes fadeInDown {
+    from {
+      opacity: 0;
+      transform: translateY(-10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  
+  /* Plot styling */
+  .plotly {
+    background-color: white !important;
+    border-radius: 10px;
+    padding: 10px;
+  }
+")
+
+# UI
+ui <- page_fluid(
+  useShinyjs(),
+  tags$head(tags$style(custom_css)),
+  
+  div(class = "main-title", "🛒 Elegant Store Sales Tracker"),
+  
+  layout_columns(
+    col_widths = c(8, 4),
+    
+    # Left column - Data display
+    card(
+      full_screen = TRUE,
+      card_header("Sales Records"),
+      DTOutput("sales_table")
+    ),
+    
+    # Right column - Input sidebar
+    div(
+      class = "sidebar-card",
+      h4("Add New Sales", style = "color: #9C7B54; margin-bottom: 20px;"),
+      
+      # Added date input
+      dateInput("sale_date", "📅 Sales Date", value = Sys.Date()),
+      
+      pickerInput(
+        "category", 
+        "📦 Product Category", 
+        choices = names(categories),
+        options = list(
+          style = "btn-light",
+          size = 10,
+          animation = "animate__animated animate__fadeIn",
+          liveSearch = TRUE
+        )
+      ),
+      
+      uiOutput("product_ui"),
+      
+      numericInput("quantity", "🔢 Quantity", value = 1, min = 1),
+      
+      div(
+        style = "display: flex; gap: 10px; margin-top: 20px;",
+        actionButton("add_row", "➕ Add and Record Sales", class = "btn-primary")
+      ),
+      
+      div(
+        style = "display: flex; gap: 10px; margin-top: 20px;",
+        actionButton("delete_row", "🗑️ Delete Row", class = "btn-primary"),
+        actionButton("undo_btn", "↩️ Undo", class = "btn-primary"),
+        actionButton("redo_btn", "↪️ Redo", class = "btn-primary")
+      ),
+      
+      div(
+        style = "display: flex; gap: 10px; margin-top: 20px;",
+        downloadButton("save_excel", "💾 Save as Excel", class = "btn-primary"),
+        downloadButton("save_csv", "📄 Save as CSV", class = "btn-primary")
+      )
+    ),
+    
+    # Full width cards for visualizations with time period selector
+    card(
+      card_header("Daily Sales Analytics"),
+      div(
+        class = "time-period-selector",
+        radioButtons(
+          "time_period", 
+          "Time Period:",
+          choices = c("Daily", "Weekly", "Monthly"),
+          selected = "Daily",
+          inline = TRUE
+        )
+      ),
+      layout_columns(
+        col_widths = c(6, 6),
+        plotlyOutput("bar_graph"),
+        plotlyOutput("pie_chart")
+      ),
+      # Highest sales caption
+      div(class = "highest-sales", htmlOutput("highest_sales_caption"))
+    ),
+    
+    # Profit Summary card
+    card(
+      card_header("Profit Summary"),
+      h4("📊 Profit Summary per Category:", style = "margin-top: 15px;"),
+      tableOutput("summary_table"),
+      div(class = "total-profit", textOutput("total_profit"))
+    )
+  )
+)
+
+# Server
+server <- function(input, output, session) {
+  # Reactive values
+  values <- reactiveValues(
+    data = sales_data,
+    undo = list(),
+    redo = list()
+  )
+  
+  # Auto-save function
+  saveData <- function(data) {
+    saveRDS(data, saveDataPath)
+  }
+  
+  # Dynamic product options based on category
+  output$product_ui <- renderUI({
+    req(input$category)
+    products <- product_data[[categories[input$category]]]$`Product Name`
+    
+    pickerInput(
+      "product", 
+      "🏷️ Brand/Product", 
+      choices = products,
+      options = list(
+        style = "btn-light",
+        size = 10,
+        animation = "animate__animated animate__fadeIn",
+        liveSearch = TRUE
+      )
+    )
+  })
+  
+  # Add sale entry with custom date
+  observeEvent(input$add_row, {
+    req(input$category, input$product, input$quantity, input$sale_date)
+    df <- product_data[[categories[input$category]]]
+    selected <- df[df$`Product Name` == input$product, ]
+    if (nrow(selected) == 0) return()
+    
+    unit_cost <- selected$`Unit Cost (PHP)`
+    unit_price <- selected$`Unit Price (PHP)`
+    profit <- (unit_price - unit_cost) * input$quantity
+    
+    new_row <- data.frame(
+      Date = as.Date(input$sale_date),
+      Category = input$category,
+      Product = input$product,
+      Quantity = input$quantity,
+      Unit_Cost = unit_cost,
+      Unit_Price = unit_price,
+      Profit = profit,
+      stringsAsFactors = FALSE
+    )
+    
+    # Save state for undo
+    values$undo <- append(values$undo, list(values$data))
+    values$data <- rbind(values$data, new_row)
+    
+    # Auto-save after adding
+    saveData(values$data)
+  })
+  
+  # Delete selected row
+  observeEvent(input$delete_row, {
+    sel <- input$sales_table_rows_selected
+    if (length(sel) > 0) {
+      values$undo <- append(values$undo, list(values$data))
+      values$data <- values$data[-sel, ]
+      # Auto-save after deleting
+      saveData(values$data)
+    }
+  })
+  
+  # Undo and Redo with auto-save
+  observeEvent(input$undo_btn, {
+    if (length(values$undo) > 0) {
+      values$redo <- append(values$redo, list(values$data))
+      values$data <- tail(values$undo, 1)[[1]]
+      values$undo <- head(values$undo, -1)
+      # Auto-save after undo
+      saveData(values$data)
+    }
+  })
+  
+  observeEvent(input$redo_btn, {
+    if (length(values$redo) > 0) {
+      values$undo <- append(values$undo, list(values$data))
+      values$data <- tail(values$redo, 1)[[1]]
+      values$redo <- head(values$redo, -1)
+      # Auto-save after redo
+      saveData(values$data)
+    }
+  })
+  
+  # Sales table output with styled DataTable
+  output$sales_table <- renderDT({
+    datatable(
+      values$data, 
+      selection = "single",
+      options = list(
+        pageLength = 10,
+        lengthMenu = c(5, 10, 15, 20),
+        dom = 'Blfrtip',
+        scrollX = TRUE,
+        autoWidth = TRUE,
+        columnDefs = list(
+          list(className = 'dt-center', targets = "_all")
+        ),
+        order = list(list(0, 'desc'))  # Sort by date, newest first
+      ),
+      class = 'cell-border stripe'
+    ) %>%
+      formatCurrency(
+        columns = c('Unit_Cost', 'Unit_Price', 'Profit'),
+        currency = "₱",
+        interval = 3,
+        mark = ",",
+        digits = 2
+      ) %>%
+      formatDate(columns = c('Date'), method = 'toLocaleDateString')
+  })
+  
+  # Save as Excel and CSV
+  output$save_excel <- downloadHandler(
+    filename = function() {
+      paste("Sales_", Sys.Date(), ".xlsx", sep = "")
+    },
+    content = function(file) {
+      write_xlsx(values$data, file)
+    }
+  )
+  
+  output$save_csv <- downloadHandler(
+    filename = function() {
+      paste("Sales_", Sys.Date(), ".csv", sep = "")
+    },
+    content = function(file) {
+      write.csv(values$data, file, row.names = FALSE)
+    }
+  )
+  
+  # Function to filter data based on time period
+  getTimeFilteredData <- function() {
+    today <- Sys.Date()
+    
+    if (input$time_period == "Daily") {
+      return(values$data %>% filter(Date == today))
+    } else if (input$time_period == "Weekly") {
+      week_start <- today - as.difftime(weekdays(today), units = "days") + 1
+      return(values$data %>% filter(Date >= week_start & Date <= today))
+    } else if (input$time_period == "Monthly") {
+      month_start <- as.Date(paste0(format(today, "%Y-%m"), "-01"))
+      return(values$data %>% filter(Date >= month_start & Date <= today))
+    }
+  }
+  
+  # Summary Table with elegant styling
+  output$summary_table <- renderTable({
+    filtered_data <- getTimeFilteredData()
+    
+    if (nrow(filtered_data) == 0) {
+      return(data.frame(Category = paste0("No sales for selected period (", input$time_period, ")"), 
+                        Total_Profit = 0))
+    }
+    
+    filtered_data %>%
+      group_by(Category) %>%
+      summarise(Total_Profit = sum(Profit))
+    
+  }, striped = TRUE, hover = TRUE, bordered = TRUE, width = "100%", class = "summary-table")
+  
+  # Total Profit with correct calculation for time period
+  output$total_profit <- renderText({
+    filtered_data <- getTimeFilteredData()
+    
+    if (nrow(filtered_data) == 0) {
+      return(paste0("💰 TOTAL PROFIT (", input$time_period, "): ₱0.00"))
+    }
+    
+    total_profit <- sum(filtered_data$Profit, na.rm = TRUE)
+    paste0("💰 TOTAL PROFIT (", input$time_period, "): ₱", format(round(total_profit, 2), big.mark = ","))
+  })
+  
+  # Bar Graph with time period filtering
+  output$bar_graph <- renderPlotly({
+    filtered_data <- getTimeFilteredData()
+    
+    if (nrow(filtered_data) == 0) {
+      return(plot_ly() %>%
+               layout(title = paste0("No sales data for ", tolower(input$time_period), " period"),
+                      xaxis = list(showticklabels = FALSE),
+                      yaxis = list(showticklabels = FALSE)))
+    }
+    
+    df <- filtered_data %>%
+      group_by(Category) %>%
+      summarise(Total_Sales = sum(Profit)) %>%
+      arrange(desc(Total_Sales))
+    
+    plot_ly(df, x = ~Category, y = ~Total_Sales, type = 'bar', name = 'Sales',
+            marker = list(color = '#B89168', line = list(color = '#9C7B54', width = 1.5))) %>%
+      layout(title = paste0("📈 ", input$time_period, " Sales per Category"),
+             xaxis = list(title = "Category", tickfont = list(color = '#9C7B54')),
+             yaxis = list(title = "Total Sales (₱)", tickfont = list(color = '#9C7B54')),
+             barmode = 'group',
+             paper_bgcolor = 'rgba(0,0,0,0)',
+             plot_bgcolor = 'rgba(0,0,0,0)',
+             font = list(color = '#9C7B54'))
+  })
+  
+  # Pie Chart with time period filtering
+  output$pie_chart <- renderPlotly({
+    filtered_data <- getTimeFilteredData()
+    
+    if (nrow(filtered_data) == 0) {
+      return(plot_ly() %>%
+               layout(title = paste0("No sales data for ", tolower(input$time_period), " period"),
+                      xaxis = list(showticklabels = FALSE),
+                      yaxis = list(showticklabels = FALSE)))
+    }
+    
+    df <- filtered_data %>%
+      group_by(Category) %>%
+      summarise(Total_Profit = sum(Profit))
+    
+    plot_ly(df, labels = ~Category, values = ~Total_Profit, type = 'pie',
+            textinfo = 'label+percent', 
+            insidetextorientation = 'radial',
+            marker = list(colors = c('#9C7B10', '#B89100', '#D2B200', '#F5DEB3', '#FFFAF9'))) %>%
+      layout(title = paste0('🍰 ', input$time_period, ' Profit Distribution'),
+             paper_bgcolor = 'rgba(0,0,0,0)',
+             plot_bgcolor = 'rgba(0,0,0,0)',
+             font = list(color = '#9C7B10'))
+  })
+  
+  # Calculate and display highest weekly sales day
+  output$highest_sales_caption <- renderUI({
+    # Only calculate for weekly view
+    if (input$time_period == "Weekly") {
+      today <- Sys.Date()
+      week_start <- today - as.difftime(weekdays(today), units = "days") + 1
+      
+      weekly_data <- values$data %>% 
+        filter(Date >= week_start & Date <= today)
+      
+      if (nrow(weekly_data) == 0) {
+        return(HTML("<strong>No sales recorded this week.</strong>"))
+      }
+      
+      daily_sales <- weekly_data %>%
+        group_by(Date) %>%
+        summarise(Total_Sales = sum(Profit)) %>%
+        arrange(desc(Total_Sales))
+      
+      if (nrow(daily_sales) > 0) {
+        max_day <- daily_sales
+
+                max_day <- daily_sales$Date[1]
+        day_name <- format(max_day, "%A")
+        max_sales <- daily_sales$Total_Sales[1]
+        
+        HTML(paste0("<strong>👑 Highest weekly sales day: ", 
+                    day_name, " (", format(max_day, "%b %d"), ") with ₱",
+                    format(round(max_sales, 2), big.mark = ","), "</strong>"))
+      } else {
+        HTML("<strong>No sales data available to determine highest day.</strong>")
+      }
+    } else if (input$time_period == "Monthly") {
+      today <- Sys.Date()
+      month_start <- as.Date(paste0(format(today, "%Y-%m"), "-01"))
+      
+      monthly_data <- values$data %>% 
+        filter(Date >= month_start & Date <= today)
+      
+      if (nrow(monthly_data) == 0) {
+        return(HTML("<strong>No sales recorded this month.</strong>"))
+      }
+      
+      weekly_sales <- monthly_data %>%
+        mutate(Week = format(Date, "%U")) %>%
+        group_by(Week) %>%
+        summarise(Total_Sales = sum(Profit)) %>%
+        arrange(desc(Total_Sales))
+      
+      if (nrow(weekly_sales) > 0) {
+        max_week <- as.numeric(weekly_sales$Week[1])
+        week_label <- paste0("Week ", max_week, " of ", format(month_start, "%B"))
+        max_sales <- weekly_sales$Total_Sales[1]
+        
+        HTML(paste0("<strong>📅 Highest monthly sales: ", 
+                    week_label, " with ₱",
+                    format(round(max_sales, 2), big.mark = ","), "</strong>"))
+      } else {
+        HTML("<strong>No sales data available to determine highest week.</strong>")
+      }
+    } else {
+      # No caption for daily view
+      return(NULL)
+    }
+  })
+  
+  # Save data on session end
+  onSessionEnded(function() {
+    saveData(isolate(values$data))
+  })
+}
+
+# Run the app
+shinyApp(ui, server)
