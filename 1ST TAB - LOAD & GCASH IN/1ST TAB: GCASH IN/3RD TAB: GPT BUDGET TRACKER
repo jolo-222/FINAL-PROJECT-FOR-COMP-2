@@ -1,0 +1,913 @@
+
+
+# Budget Tracker Tab for JAVIER STORE application
+# This code should be integrated into your main app as a second tab
+
+# Budget Tracker UI Component
+budget_tracker_ui <- div(
+  class = "main-title", "JAVIER STORE: BUDGET TRACKER",
+  
+  # Using direct div styling for layout
+  div(
+    style = "display: flex; width: 100%;",
+    
+    # Left column (70%) - Budget data display and graphs
+    div(
+      style = "width: 70%; padding-right: 20px;",
+      
+      # Monthly Overview Card with Year Selector
+      card(
+        full_screen = TRUE,
+        card_header("MONTHLY BUDGET OVERVIEW"),
+        div(
+          style = "padding: 15px;",
+          fluidRow(
+            column(6, 
+                   selectInput("budget_year", "Select Year:", 
+                               choices = seq(as.integer(format(Sys.Date(), "%Y"))-2, 
+                                             as.integer(format(Sys.Date(), "%Y"))+2), 
+                               selected = as.integer(format(Sys.Date(), "%Y"))
+                   )
+            ),
+            column(6, align = "right", 
+                   div(class = "total-budget", textOutput("yearly_budget_summary"))
+            )
+          )
+        ),
+        plotlyOutput("monthly_budget_chart", height = "300px")
+      ),
+      
+      # Budget Transactions Table
+      card(
+        card_header("BUDGET TRANSACTIONS"),
+        DTOutput("budget_table")
+      ),
+      
+      # Budget Analytics
+      card(
+        card_header("BUDGET ANALYTICS"),
+        fluidRow(
+          column(6, plotlyOutput("category_spending_chart")),
+          column(6, plotlyOutput("income_vs_expense_chart"))
+        ),
+        # Spending insights
+        div(class = "highest-sales", htmlOutput("budget_insights"))
+      )
+    ),
+    
+    # Right column (30%) - Input forms and summary
+    div(
+      style = "width: 30%;",
+      
+      # Add New Transaction Card
+      div(
+        class = "sidebar-card",
+        h4("ADD NEW TRANSACTION", style = "color: #7B3F01; margin-bottom: 20px; font-weight: bold;"),
+        
+        radioButtons("transaction_type", "Transaction Type:", 
+                     choices = c("Income", "Expense"),
+                     inline = TRUE),
+        
+        dateInput("transaction_date", "📅 Date", value = Sys.Date()),
+        
+        # For Income
+        conditionalPanel(
+          condition = "input.transaction_type == 'Income'",
+          pickerInput(
+            "income_source", 
+            "💰 Income Source", 
+            choices = c("Salary", "Business", "Investment", "Gift", "Other"),
+            options = list(style = "btn-light", liveSearch = TRUE)
+          ),
+          # Conditional input for "Other" income source
+          conditionalPanel(
+            condition = "input.income_source == 'Other'",
+            textInput("other_income_source", "Specify Income Source:", "")
+          )
+        ),
+        
+        # For Expense
+        conditionalPanel(
+          condition = "input.transaction_type == 'Expense'",
+          pickerInput(
+            "expense_category", 
+            "📦 Expense Category", 
+            choices = c("Food", "Transportation", "Housing", "Utilities", "Healthcare", 
+                        "Education", "Entertainment", "Personal", "Savings", "Debt", "Other"),
+            options = list(style = "btn-light", liveSearch = TRUE)
+          ),
+          # Conditional input for "Other" expense category
+          conditionalPanel(
+            condition = "input.expense_category == 'Other'",
+            textInput("other_expense_category", "Specify Expense Category:", "")
+          )
+        ),
+        
+        numericInput("transaction_amount", "💲 Amount (PHP)", value = 0, min = 0),
+        textAreaInput("transaction_description", "📝 Description (Optional)", "", rows = 2),
+        
+        div(
+          style = "display: flex; gap: 10px; margin-top: 20px;",
+          actionButton("add_transaction", "➕ Add Transaction", class = "btn-primary", style = "width: 100%;")
+        ),
+        
+        div(
+          style = "display: flex; gap: 10px; margin-top: 20px; flex-wrap: wrap;",
+          actionButton("delete_transaction", "🗑️ Delete Transaction", class = "btn-primary", style = "flex: 1;")
+        )
+      ),
+      
+      # Budget Summary Card
+      card(
+        card_header("BUDGET SUMMARY"),
+        div(
+          style = "padding: 15px;",
+          selectInput("summary_month", "Month:", 
+                      choices = month.name,
+                      selected = month.name[as.integer(format(Sys.Date(), "%m"))]
+          ),
+          
+          div(class = "total-profit", textOutput("month_balance")),
+          
+          tableOutput("budget_summary_table"),
+          
+          # Month-to-date progress bars
+          h5("Month Progress", style = "margin-top: 20px; color: #7B3F01;"),
+          div(
+            style = "margin: 15px 0;",
+            h6("Income Target", style = "margin-bottom: 5px;"),
+            div(class = "progress", style = "height: 25px;",
+                div(id = "income_progress", class = "progress-bar", 
+                    role = "progressbar", style = "width: 0%; background-color: #4ECDC4;", 
+                    "0%"
+                )
+            ),
+            
+            h6("Expense Budget", style = "margin: 10px 0 5px 0;"),
+            div(class = "progress", style = "height: 25px;",
+                div(id = "expense_progress", class = "progress-bar", 
+                    role = "progressbar", style = "width: 0%; background-color: #FF6B6B;", 
+                    "0%"
+                )
+            ),
+            
+            h6("Savings Goal", style = "margin: 10px 0 5px 0;"),
+            div(class = "progress", style = "height: 25px;",
+                div(id = "savings_progress", class = "progress-bar", 
+                    role = "progressbar", style = "width: 0%; background-color: #45B7D1;", 
+                    "0%"
+                )
+            )
+          )
+        )
+      ),
+      
+      # Monthly Budget Goals Card
+      card(
+        card_header("MONTHLY BUDGET GOALS"),
+        div(
+          style = "padding: 15px;",
+          numericInput("income_target", "Income Target (PHP)", 
+                       value = 30000, min = 0),
+          numericInput("expense_budget", "Expense Budget (PHP)", 
+                       value = 25000, min = 0),
+          numericInput("savings_goal", "Savings Goal (PHP)", 
+                       value = 5000, min = 0),
+          actionButton("update_goals", "Update Goals", 
+                       class = "btn-primary", style = "width: 100%; margin-top: 15px;")
+        )
+      )
+    )
+  )
+)
+
+# Budget Tracker Server Logic
+budget_tracker_server <- function(input, output, session) {
+  # Initialize reactive values for budget data
+  budget_values <- reactiveValues(
+    transactions = data.frame(
+      id = integer(),
+      date = as.Date(character()),
+      type = character(),  # "Income" or "Expense"
+      category = character(),
+      amount = numeric(),
+      description = character(),
+      stringsAsFactors = FALSE
+    ),
+    budget_goals = data.frame(
+      month = month.name,
+      income_target = rep(30000, 12),
+      expense_budget = rep(25000, 12),
+      savings_goal = rep(5000, 12),
+      stringsAsFactors = FALSE
+    )
+  )
+  
+  # Try to load existing budget data
+  budgetDataPath <- "budget_data.rds"
+  if (file.exists(budgetDataPath)) {
+    loaded_data <- readRDS(budgetDataPath)
+    budget_values$transactions <- loaded_data$transactions
+    budget_values$budget_goals <- loaded_data$budget_goals
+  }
+  
+  # Save budget data function
+  saveBudgetData <- function() {
+    saveRDS(list(
+      transactions = budget_values$transactions,
+      budget_goals = budget_values$budget_goals
+    ), budgetDataPath)
+  }
+  
+  # Add transaction
+  observeEvent(input$add_transaction, {
+    # Validate input
+    req(input$transaction_date, input$transaction_amount)
+    
+    if (input$transaction_amount <= 0) {
+      showNotification("Amount must be greater than 0", type = "error")
+      return()
+    }
+    
+    # Determine category based on transaction type
+    category <- if (input$transaction_type == "Income") {
+      if (input$income_source == "Other") input$other_income_source else input$income_source
+    } else {
+      if (input$expense_category == "Other") input$other_expense_category else input$expense_category
+    }
+    
+    # Add new transaction
+    new_id <- if (nrow(budget_values$transactions) > 0) max(budget_values$transactions$id) + 1 else 1
+    new_transaction <- data.frame(
+      id = new_id,
+      date = as.Date(input$transaction_date),
+      type = input$transaction_type,
+      category = category,
+      amount = input$transaction_amount,
+      description = input$transaction_description,
+      stringsAsFactors = FALSE
+    )
+    
+    budget_values$transactions <- rbind(budget_values$transactions, new_transaction)
+    
+    # Save data
+    saveBudgetData()
+    
+    # Reset inputs
+    updateNumericInput(session, "transaction_amount", value = 0)
+    updateTextAreaInput(session, "transaction_description", value = "")
+    
+    showNotification(paste(input$transaction_type, "added successfully"), type = "success")
+  })
+  
+  # Delete transaction
+  observeEvent(input$delete_transaction, {
+    sel <- input$budget_table_rows_selected
+    if (length(sel) > 0) {
+      budget_values$transactions <- budget_values$transactions[-sel, ]
+      saveBudgetData()
+      showNotification("Transaction deleted", type = "success")
+    } else {
+      showNotification("No transaction selected", type = "warning")
+    }
+  })
+  
+  # Update budget goals
+  observeEvent(input$update_goals, {
+    current_month <- input$summary_month
+    current_month_idx <- which(month.name == current_month)
+    
+    budget_values$budget_goals[current_month_idx, "income_target"] <- input$income_target
+    budget_values$budget_goals[current_month_idx, "expense_budget"] <- input$expense_budget
+    budget_values$budget_goals[current_month_idx, "savings_goal"] <- input$savings_goal
+    
+    saveBudgetData()
+    showNotification("Budget goals updated", type = "success")
+    
+    # Update progress bars
+    updateBudgetProgress()
+  })
+  
+  # Function to update budget progress bars
+  updateBudgetProgress <- function() {
+    current_month <- input$summary_month
+    current_month_idx <- which(month.name == current_month)
+    selected_year <- as.integer(input$budget_year)
+    current_year <- as.integer(format(Sys.Date(), "%Y"))
+    
+    # Only show progress for current month in current year
+    if (current_month == month.name[as.integer(format(Sys.Date(), "%m"))] && 
+        selected_year == current_year) {
+      
+      # Filter transactions for this month and year
+      month_transactions <- budget_values$transactions %>%
+        filter(
+          format(date, "%B") == current_month,
+          format(date, "%Y") == as.character(selected_year)
+        )
+      
+      # Calculate totals
+      total_income <- sum(month_transactions$amount[month_transactions$type == "Income"])
+      total_expense <- sum(month_transactions$amount[month_transactions$type == "Expense"])
+      total_savings <- total_income - total_expense
+      
+      # Get goals
+      income_target <- budget_values$budget_goals[current_month_idx, "income_target"]
+      expense_budget <- budget_values$budget_goals[current_month_idx, "expense_budget"]
+      savings_goal <- budget_values$budget_goals[current_month_idx, "savings_goal"]
+      
+      # Calculate percentages (capped at 100%)
+      income_pct <- min(100, round((total_income / income_target) * 100))
+      expense_pct <- min(100, round((total_expense / expense_budget) * 100))
+      savings_pct <- min(100, round((total_savings / savings_goal) * 100))
+      
+      # Update progress bars using shinyjs
+      runjs(sprintf("document.getElementById('income_progress').style.width = '%s%%';", income_pct))
+      runjs(sprintf("document.getElementById('income_progress').textContent = '%s%%';", income_pct))
+      
+      runjs(sprintf("document.getElementById('expense_progress').style.width = '%s%%';", expense_pct))
+      runjs(sprintf("document.getElementById('expense_progress').textContent = '%s%%';", expense_pct))
+      
+      runjs(sprintf("document.getElementById('savings_progress').style.width = '%s%%';", savings_pct))
+      runjs(sprintf("document.getElementById('savings_progress').textContent = '%s%%';", savings_pct))
+      
+      # Add warning color if expense is over budget
+      if (expense_pct > 90) {
+        runjs("document.getElementById('expense_progress').style.backgroundColor = '#FF4500';")
+      } else {
+        runjs("document.getElementById('expense_progress').style.backgroundColor = '#FF6B6B';")
+      }
+      
+      # Add success color if savings exceeds goal
+      if (savings_pct >= 100) {
+        runjs("document.getElementById('savings_progress').style.backgroundColor = '#3CB371';")
+      } else {
+        runjs("document.getElementById('savings_progress').style.backgroundColor = '#45B7D1';")
+      }
+    } else {
+      # Reset progress bars for non-current months
+      runjs("document.getElementById('income_progress').style.width = '0%';")
+      runjs("document.getElementById('income_progress').textContent = 'N/A';")
+      
+      runjs("document.getElementById('expense_progress').style.width = '0%';")
+      runjs("document.getElementById('expense_progress').textContent = 'N/A';")
+      
+      runjs("document.getElementById('savings_progress').style.width = '0%';")
+      runjs("document.getElementById('savings_progress').textContent = 'N/A';")
+    }
+  }
+  
+  # Initialize progress bars when tab is loaded
+  observeEvent(input$summary_month, {
+    updateBudgetProgress()
+  })
+  
+  # Budget transactions table
+  output$budget_table <- renderDT({
+    req(nrow(budget_values$transactions) > 0)
+    
+    # Show transactions for selected year
+    selected_year <- input$budget_year
+    year_transactions <- budget_values$transactions %>%
+      filter(format(date, "%Y") == selected_year)
+    
+    if(nrow(year_transactions) == 0) {
+      return(
+        datatable(
+          data.frame(
+            Message = "No transactions found for the selected year"
+          ),
+          options = list(dom = 't'),
+          rownames = FALSE
+        )
+      )
+    }
+    
+    # Format table
+    datatable(
+      year_transactions,
+      selection = "single",
+      options = list(
+        pageLength = 10,
+        lengthMenu = c(5, 10, 15, 20),
+        dom = 'Blfrtip',
+        scrollX = TRUE,
+        autoWidth = TRUE,
+        columnDefs = list(
+          list(className = 'dt-center', targets = "_all"),
+          list(visible = FALSE, targets = c(0))  # Hide ID column
+        ),
+        order = list(list(1, 'desc')),  # Sort by date, newest first
+        initComplete = JS(
+          "function(settings, json) {",
+          "  $(this.api().table().header()).css({'background-color': '#7B3F00', 'color': 'white'});",
+          "}"
+        )
+      ),
+      class = 'cell-border stripe',
+      rownames = FALSE
+    ) %>%
+      formatCurrency(
+        columns = c('amount'),
+        currency = "₱",
+        interval = 3,
+        mark = ",",
+        digits = 2
+      ) %>%
+      formatDate(columns = c('date'), method = 'toLocaleDateString') %>%
+      formatStyle(
+        'type',
+        backgroundColor = styleEqual(
+          c('Income', 'Expense'),
+          c('#4ECDC4', '#FF6B6B')
+        ),
+        color = 'white',
+        fontWeight = 'bold'
+      )
+  })
+  
+  # Monthly Budget Chart
+  output$monthly_budget_chart <- renderPlotly({
+    selected_year <- as.integer(input$budget_year)
+    
+    # Filter transactions for selected year
+    year_transactions <- budget_values$transactions %>%
+      filter(format(date, "%Y") == as.character(selected_year))
+    
+    if(nrow(year_transactions) == 0) {
+      return(plot_ly() %>% 
+               layout(title = "No transactions for the selected year",
+                      xaxis = list(title = ""),
+                      yaxis = list(title = "")))
+    }
+    
+    # Prepare monthly data
+    monthly_data <- data.frame(
+      Month = factor(month.name, levels = month.name),
+      Income = rep(0, 12),
+      Expense = rep(0, 12),
+      Savings = rep(0, 12)
+    )
+    
+    # Calculate actual monthly values
+    for(i in 1:12) {
+      month_name <- month.name[i]
+      month_trans <- year_transactions %>%
+        filter(format(date, "%B") == month_name)
+      
+      if(nrow(month_trans) > 0) {
+        monthly_data$Income[i] <- sum(month_trans$amount[month_trans$type == "Income"])
+        monthly_data$Expense[i] <- sum(month_trans$amount[month_trans$type == "Expense"])
+        monthly_data$Savings[i] <- monthly_data$Income[i] - monthly_data$Expense[i]
+      }
+    }
+    
+    # Convert to long format for plotting
+    monthly_long <- reshape2::melt(monthly_data, id.vars = "Month", 
+                                   variable.name = "Category", 
+                                   value.name = "Amount")
+    
+    # Create the chart
+    plot_ly(monthly_long, x = ~Month, y = ~Amount, color = ~Category, type = "scatter", mode = "lines+markers",
+            colors = c("Income" = "#4ECDC4", "Expense" = "#FF6B6B", "Savings" = "#45B7D1"),
+            line = list(width = 3),
+            marker = list(size = 8, line = list(width = 1, color = "#7B3F00"))) %>%
+      layout(
+        title = paste("Monthly Budget Overview -", selected_year),
+        xaxis = list(title = ""),
+        yaxis = list(title = "Amount (PHP)"),
+        legend = list(orientation = "h", y = 1.1),
+        hoverlabel = list(bgcolor = "#CD853F", font = list(color = "white")),
+        plot_bgcolor = "#FFF5EB",
+        paper_bgcolor = "#FFF5EB"
+      )
+  })
+  
+  # Category spending chart
+  output$category_spending_chart <- renderPlotly({
+    selected_year <- input$budget_year
+    selected_month <- input$summary_month
+    
+    # Filter expenses for selected month and year
+    month_expenses <- budget_values$transactions %>%
+      filter(
+        type == "Expense",
+        format(date, "%B") == selected_month,
+        format(date, "%Y") == selected_year
+      )
+    
+    if(nrow(month_expenses) == 0) {
+      return(plot_ly() %>% 
+               layout(title = "No expense data for the selected month",
+                      xaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE),
+                      yaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE)))
+    }
+    
+    # Aggregate by category
+    category_data <- month_expenses %>%
+      group_by(category) %>%
+      summarise(amount = sum(amount)) %>%
+      arrange(desc(amount))
+    
+    # Limit to top 5 categories
+    if(nrow(category_data) > 5) {
+      others <- data.frame(
+        category = "Others",
+        amount = sum(category_data$amount[6:nrow(category_data)])
+      )
+      category_data <- rbind(head(category_data, 5), others)
+    }
+    
+    # Create a color palette that matches the brown theme
+    colors <- c("#7B3F00", "#A0522D", "#CD853F", "#DEB887", "#F5DEB3", "#D2B48C")
+    
+    # Create the pie chart
+    plot_ly(
+      data = category_data,
+      labels = ~category,
+      values = ~amount,
+      type = "pie",
+      marker = list(colors = colors, line = list(color = "#7B3F00", width = 1)),
+      hoverinfo = "label+percent+value",
+      textposition = "inside",
+      textinfo = "percent",
+      insidetextfont = list(color = "#FFF5EB")
+    ) %>%
+      layout(
+        title = paste("Expense Categories -", selected_month),
+        showlegend = TRUE,
+        legend = list(orientation = "h", y = -0.2),
+        hoverlabel = list(bgcolor = "#CD853F", font = list(color = "white")),
+        plot_bgcolor = "#FFF5EB",
+        paper_bgcolor = "#FFF5EB"
+      )
+  })
+  
+  # Income vs. Expense chart
+  output$income_vs_expense_chart <- renderPlotly({
+    selected_year <- input$budget_year
+    
+    # Calculate quarterly data
+    quarters <- c("Q1 (Jan-Mar)", "Q2 (Apr-Jun)", "Q3 (Jul-Sep)", "Q4 (Oct-Dec)")
+    quarterly_data <- data.frame(
+      Quarter = quarters,
+      Income = rep(0, 4),
+      Expense = rep(0, 4)
+    )
+    
+    # Populate with data from each quarter
+    for(q in 1:4) {
+      start_month <- (q-1)*3 + 1
+      end_month <- q*3
+      
+      quarter_transactions <- budget_values$transactions %>%
+        filter(
+          as.integer(format(date, "%m")) >= start_month,
+          as.integer(format(date, "%m")) <= end_month,
+          format(date, "%Y") == selected_year
+        )
+      
+      if(nrow(quarter_transactions) > 0) {
+        quarterly_data$Income[q] <- sum(quarter_transactions$amount[quarter_transactions$type == "Income"])
+        quarterly_data$Expense[q] <- sum(quarter_transactions$amount[quarter_transactions$type == "Expense"])
+      }
+    }
+    
+    # Create data for plotting
+    q_income <- quarterly_data$Income
+    q_expense <- quarterly_data$Expense
+    q_balance <- q_income - q_expense
+    
+    # Create the bar chart
+    plot_ly() %>%
+      add_trace(
+        x = quarters,
+        y = q_income,
+        name = "Income",
+        type = "bar",
+        marker = list(color = "#4ECDC4")
+      ) %>%
+      add_trace(
+        x = quarters,
+        y = q_expense,
+        name = "Expense",
+        type = "bar",
+        marker = list(color = "#FF6B6B")
+      ) %>%
+      add_trace(
+        x = quarters,
+        y = q_balance,
+        name = "Balance",
+        type = "scatter",
+        mode = "lines+markers",
+        line = list(color = "#45B7D1", width = 3),
+        marker = list(color = "#45B7D1", size = 10)
+      ) %>%
+      layout(
+        title = paste("Quarterly Income vs. Expense -", selected_year),
+        xaxis = list(title = ""),
+        yaxis = list(title = "Amount (PHP)"),
+        barmode = "group",
+        hoverlabel = list(bgcolor = "#CD853F", font = list(color = "white")),
+        plot_bgcolor = "#FFF5EB",
+        paper_bgcolor = "#FFF5EB",
+        legend = list(orientation = "h", y = 1.1)
+      )
+  })
+  
+  # Budget insights
+  output$budget_insights <- renderUI({
+    selected_year <- input$budget_year
+    selected_month <- input$summary_month
+    
+    # Filter transactions for selected month and year
+    month_transactions <- budget_values$transactions %>%
+      filter(
+        format(date, "%B") == selected_month,
+        format(date, "%Y") == selected_year
+      )
+    
+    if(nrow(month_transactions) == 0) {
+      return(tags$div(
+        tags$h4("No insights available"),
+        tags$p("Add transactions to see budget insights.")
+      ))
+    }
+    
+    # Calculate basic metrics
+    total_income <- sum(month_transactions$amount[month_transactions$type == "Income"])
+    total_expense <- sum(month_transactions$amount[month_transactions$type == "Expense"])
+    balance <- total_income - total_expense
+    
+    # Get top expense category
+    top_expense <- NULL
+    if(sum(month_transactions$type == "Expense") > 0) {
+      expense_data <- month_transactions %>%
+        filter(type == "Expense") %>%
+        group_by(category) %>%
+        summarise(amount = sum(amount)) %>%
+        arrange(desc(amount))
+      
+      if(nrow(expense_data) > 0) {
+        top_expense <- expense_data[1,]
+      }
+    }
+    
+    # Generate insights
+    insights <- tags$div(
+      tags$h4("This Month's Insights"),
+      
+      # Income vs Expense
+      tags$div(
+        class = "insight-item",
+        if(balance >= 0) {
+          tags$p(HTML(paste0("You've earned <span style='color:#4ECDC4; font-weight:bold;'>₱", 
+                             format(total_income, big.mark=",", scientific=FALSE), 
+                             "</span> and spent <span style='color:#FF6B6B; font-weight:bold;'>₱", 
+                             format(total_expense, big.mark=",", scientific=FALSE),
+                             "</span> this month, with a positive balance of <span style='color:#3CB371; font-weight:bold;'>₱",
+                             format(balance, big.mark=",", scientific=FALSE), "</span>")))
+        } else {
+          tags$p(HTML(paste0("You've earned <span style='color:#4ECDC4; font-weight:bold;'>₱", 
+                             format(total_income, big.mark=",", scientific=FALSE), 
+                             "</span> and spent <span style='color:#FF6B6B; font-weight:bold;'>₱", 
+                             format(total_expense, big.mark=",", scientific=FALSE),
+                             "</span> this month, with a negative balance of <span style='color:#FF4500; font-weight:bold;'>₱",
+                             format(abs(balance), big.mark=",", scientific=FALSE), "</span>")))
+        }
+      ),
+      
+      # Top expense category
+      if(!is.null(top_expense)) {
+        tags$div(
+          class = "insight-item",
+          tags$p(HTML(paste0("Your highest expense category is <span style='font-weight:bold;'>", 
+                             top_expense$category, 
+                             "</span> at <span style='color:#FF6B6B; font-weight:bold;'>₱", 
+                             format(top_expense$amount, big.mark=",", scientific=FALSE),
+                             "</span> (", 
+                             round((top_expense$amount/total_expense)*100, 1),
+                             "% of total expenses)")))
+        )
+      },
+      
+      # Savings rate
+      if(total_income > 0) {
+        tags$div(
+          class = "insight-item",
+          tags$p(HTML(paste0("Your savings rate is <span style='font-weight:bold;'>", 
+                             round((balance/total_income)*100, 1), 
+                             "%</span> of your income", 
+                             if((balance/total_income) >= 0.2) {
+                               " — Great job! 👏"
+                             } else if((balance/total_income) >= 0) {
+                               " — Consider saving more next month"
+                             } else {
+                               " — You're spending more than you earn"
+                             })))
+        )
+      },
+      
+      # Custom advice based on situation
+      tags$div(
+        class = "insight-item",
+        if(balance < 0) {
+          tags$p(HTML("💡 <span style='font-weight:bold;'>Tip:</span> Consider reducing expenses in your top spending categories to balance your budget next month."))
+        } else if((total_income - total_expense) < (total_income * 0.1)) {
+          tags$p(HTML("💡 <span style='font-weight:bold;'>Tip:</span> You're just barely in the positive. Try to save at least 10-20% of your income."))
+        } else {
+          tags$p(HTML("💡 <span style='font-weight:bold;'>Tip:</span> You're doing well! Consider putting your surplus toward savings or investments."))
+        }
+      )
+    )
+    
+    return(insights)
+  })
+  
+  # Budget summary table
+  output$budget_summary_table <- renderTable({
+    selected_month <- input$summary_month
+    selected_year <- input$budget_year
+    current_month_idx <- which(month.name == selected_month)
+    
+    # Get budget goals for the month
+    month_goals <- budget_values$budget_goals[current_month_idx, ]
+    
+    # Filter transactions for selected month and year
+    month_transactions <- budget_values$transactions %>%
+      filter(
+        format(date, "%B") == selected_month,
+        format(date, "%Y") == selected_year
+      )
+    
+    # Calculate actuals
+    total_income <- sum(month_transactions$amount[month_transactions$type == "Income"])
+    total_expense <- sum(month_transactions$amount[month_transactions$type == "Expense"])
+    total_savings <- total_income - total_expense
+    
+    # Create summary table
+    summary_df <- data.frame(
+      Category = c("Income", "Expenses", "Savings"),
+      Goal = c(
+        month_goals$income_target,
+        month_goals$expense_budget,
+        month_goals$savings_goal
+      ),
+      Actual = c(
+        total_income,
+        total_expense,
+        total_savings
+      ),
+      Difference = c(
+        total_income - month_goals$income_target,
+        month_goals$expense_budget - total_expense,  # Reversed for expenses (under budget is positive)
+        total_savings - month_goals$savings_goal
+      )
+    )
+    
+    # Format numbers
+    summary_df$Goal <- paste0("₱", format(summary_df$Goal, big.mark = ",", scientific = FALSE))
+    summary_df$Actual <- paste0("₱", format(summary_df$Actual, big.mark = ",", scientific = FALSE))
+    
+    # Format differences with colors and signs
+    summary_df$Difference <- sapply(1:nrow(summary_df), function(i) {
+      val <- summary_df$Difference[i]
+      
+      # For expenses, under budget (positive difference) is good
+      # For income and savings, over goal (positive difference) is good
+      if ((i == 2 && val >= 0) || ((i == 1 || i == 3) && val >= 0)) {
+        return(paste0("<span style='color:#3CB371;'>+₱", format(abs(val), big.mark = ",", scientific = FALSE), "</span>"))
+      } else {
+        return(paste0("<span style='color:#FF4500;'>-₱", format(abs(val), big.mark = ",", scientific = FALSE), "</span>"))
+      }
+    })
+    
+    summary_df
+  }, sanitize.text.function = function(x) x)
+  
+  # Month balance
+  output$month_balance <- renderText({
+    selected_month <- input$summary_month
+    selected_year <- input$budget_year
+    
+    # Filter transactions for selected month and year
+    month_transactions <- budget_values$transactions %>%
+      filter(
+        format(date, "%B") == selected_month,
+        format(date, "%Y") == selected_year
+      )
+    
+    # Calculate balance
+    total_income <- sum(month_transactions$amount[month_transactions$type == "Income"])
+    total_expense <- sum(month_transactions$amount[month_transactions$type == "Expense"])
+    balance <- total_income - total_expense
+    
+    # Format output
+    paste0(
+      selected_month, " ", selected_year, " Balance: ",
+      if(balance >= 0) "₱" else "-₱",
+      format(abs(balance), big.mark = ",", scientific = FALSE)
+    )
+  })
+  
+  # Yearly budget summary
+  output$yearly_budget_summary <- renderText({
+    selected_year <- input$budget_year
+    
+    # Filter transactions for selected year
+    year_transactions <- budget_values$transactions %>%
+      filter(format(date, "%Y") == selected_year)
+    
+    # Calculate totals
+    total_income <- sum(year_transactions$amount[year_transactions$type == "Income"])
+    total_expense <- sum(year_transactions$amount[year_transactions$type == "Expense"])
+    balance <- total_income - total_expense
+    
+    # Format output
+    paste0(
+      selected_year, " Total: ",
+      if(balance >= 0) "₱" else "-₱",
+      format(abs(balance), big.mark = ",", scientific = FALSE)
+    )
+  })
+  
+  # Initialize when tab loads
+  updateSelectInput(session, "summary_month", selected = month.name[as.integer(format(Sys.Date(), "%m"))])
+  
+  # Update budget goals inputs when month changes
+  observeEvent(input$summary_month, {
+    current_month <- input$summary_month
+    current_month_idx <- which(month.name == current_month)
+    
+    updateNumericInput(session, "income_target", 
+                       value = budget_values$budget_goals[current_month_idx, "income_target"])
+    updateNumericInput(session, "expense_budget", 
+                       value = budget_values$budget_goals[current_month_idx, "expense_budget"])
+    updateNumericInput(session, "savings_goal", 
+                       value = budget_values$budget_goals[current_month_idx, "savings_goal"])
+  })
+}
+}
+
+# CSS for Budget Tracker
+budget_tracker_css <- "
+.main-title {
+  font-size: 24px;
+  font-weight: bold;
+  color: #7B3F01;
+  text-align: center;
+  margin: 20px 0;
+  font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+}
+
+.sidebar-card {
+  background-color: #FFF5EB;
+  border-radius: 5px;
+  padding: 20px;
+  margin-bottom: 20px;
+  box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+}
+
+.total-budget, .total-profit {
+  font-size: 22px;
+  font-weight: bold;
+  margin: 10px 0;
+  color: #7B3F01;
+}
+
+.highest-sales {
+  background-color: #F8F0E3;
+  padding: 15px;
+  border-radius: 5px;
+  margin-top: 15px;
+}
+
+.insight-item {
+  background-color: #F8F0E3;
+  padding: 10px;
+  border-radius: 5px;
+  margin-bottom: 10px;
+}
+
+/* Style for cards */
+.card-header {
+  background-color: #7B3F00 !important;
+  color: white !important;
+  font-weight: bold;
+}
+
+/* Style for tables */
+.table {
+  background-color: #FFF5EB;
+}
+
+.table thead th {
+  background-color: #CD853F;
+  color: white;
+}
+
+/* Progress bar colors */
+.progress {
+  background-color: #F8F0E3;
+}
+"
