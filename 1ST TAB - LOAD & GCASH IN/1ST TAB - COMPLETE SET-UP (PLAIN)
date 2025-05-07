@@ -1,0 +1,430 @@
+library(shiny)
+library(DT)
+library(shinyjs)
+library(ggplot2)
+library(plotly)
+library(dplyr)
+library(lubridate)
+
+data_file <- "transactions.csv"
+
+if (!file.exists(data_file)) {
+  write.csv(data.frame(
+    Date = as.Date(character()),
+    Customer_Name = character(),
+    Mobile_Number = character(),
+    Type = character(),
+    Total_Amount = numeric(),
+    Profit = numeric(),
+    stringsAsFactors = FALSE
+  ), data_file, row.names = FALSE)
+}
+
+history_stack <- reactiveValues(data = list())
+redo_stack <- reactiveValues(data = list())
+
+# Custom CSS for brown palette
+custom_css <- "
+  .brown-palette-dark {color: #7B3F00;}
+  .brown-palette-medium {color: #A0522D;}
+  .brown-palette-light {color: #CD853F;}
+  .brown-palette-lighter {color: #DEB887;}
+  .brown-palette-offwhite {color: #FFF5EB;}
+  .brown-palette-darkorange {color: #FF8C00;}
+  
+  .card {
+    border: 1px solid #DEB887;
+    border-radius: 8px;
+    margin-bottom: 15px;
+    box-shadow: 0 4px 8px rgba(123, 63, 0, 0.1);
+  }
+  
+  .card-header {
+    background-color: #FFF5EB;
+    border-bottom: 1px solid #DEB887;
+    padding: 10px 15px;
+    font-weight: bold;
+    color: #7B3F00;
+  }
+  
+  .card-body {
+    padding: 15px;
+    background-color: white;
+  }
+"
+
+ui <- fluidPage(
+  useShinyjs(),
+  tags$head(
+    tags$style(custom_css)
+  ),
+  titlePanel("📋 Load & GCash in/out Profit Tracker", windowTitle = "Transaction History"),
+  sidebarLayout(
+    sidebarPanel(
+      conditionalPanel(
+        condition = "input.tabs == 'Transactions'",
+        textInput("customer_name", "Customer Name:"),
+        textInput("mobile", "Mobile Number:"),
+        selectInput("type", "Transaction Type:",
+                    choices = c("Load", "GCash-In", "GCash-Out")),
+        numericInput("totalamount", "Total Amount(₱):", value = 0),
+        actionButton("submit", "Save Transaction", class = "btn btn-primary"),
+        br(), br(),
+        actionButton("deleterow", "Delete Row", class = "btn btn-warning"),
+        actionButton("undoBtn", "Undo", class = "btn btn-dark"),
+        actionButton("redoBtn", "Redo", class = "btn btn-dark"),
+        br(), br(),
+        downloadButton("downloadData", "Download Transactions"),
+        br(), br()
+      ),
+      conditionalPanel(
+        condition = "input.tabs == 'Analytics'",
+        selectInput("time_frame", "Time Frame:",
+                    choices = c("Daily", "Weekly", "Monthly")),
+        dateInput("selected_date", "Select Date:", value = Sys.Date())
+      )
+    ),
+    mainPanel(
+      tabsetPanel(id = "tabs",
+                  selected = "Transactions",
+                  tabPanel("📋 Transactions", value = "Transactions", br(), 
+                           DTOutput("data_table"), br(), 
+                           actionButton("clearhistory", "Clear History", class = "btn btn-danger")),
+                  tabPanel("📊 Analytics", value = "Analytics", br(),
+                           div(class = "card",
+                               div(class = "card-header", "Highest Transaction by Type"),
+                               div(class = "card-body", 
+                                   plotlyOutput("transaction_bar_chart", height = "300px")
+                               )
+                           ),
+                           br(),
+                           div(class = "card",
+                               div(class = "card-header", "Today's Profit Distribution"),
+                               div(class = "card-body", 
+                                   plotlyOutput("profit_pie_chart", height = "300px"),
+                                   hr(),
+                                   h4(textOutput("total_profit_text"), align = "center", 
+                                      style = "font-weight: bold; color: #7B3F00;")
+                               )
+                           )
+                  )
+      )
+    )
+  )
+)
+
+server <- function(input, output, session) {
+  data <- reactiveVal()
+  
+  read_data <- function() {
+    df <- read.csv(data_file, stringsAsFactors = FALSE)
+    df$Date <- as.Date(df$Date)
+    return(df)
+  }
+  
+  data(read_data())
+  
+  save_data <- function(df) {
+    history_stack$data <- append(history_stack$data, list(data()))
+    redo_stack$data <- list()
+    write.csv(df, data_file, row.names = FALSE)
+    data(df)
+  }
+  
+  filtered_data <- reactive({
+    df <- data()
+    date_selected <- input$selected_date
+    
+    if(input$time_frame == "Daily") {
+      df <- df[df$Date == date_selected, ]
+    } else if(input$time_frame == "Weekly") {
+      # Get start and end of week containing the selected date
+      start_of_week <- date_selected - wday(date_selected) + 1
+      end_of_week <- start_of_week + 6
+      df <- df[df$Date >= start_of_week & df$Date <= end_of_week, ]
+    } else if(input$time_frame == "Monthly") {
+      # Get all dates in the same month and year
+      same_month <- month(df$Date) == month(date_selected) & year(df$Date) == year(date_selected)
+      df <- df[same_month, ]
+    }
+    
+    return(df)
+  })
+  
+  observeEvent(input$submit, {
+    req(input$customer_name, input$mobile, input$totalamount)
+    
+    mobile_digits <- gsub("[^0-9]", "", input$mobile)
+    if (nchar(mobile_digits) != 11) {
+      showNotification("❌ Invalid mobile number!", type = "error")
+      return()
+    }
+    
+    profit <- if(input$type == "Load") {
+      if(input$totalamount >=1 & input$totalamount <50) {
+        3
+      } else if (input$totalamount >=50 & input$totalamount <100) {
+        5
+      } else if (input$totalamount >=100 & input$totalamount <200) {
+        10
+      } else if (input$totalamount >=200 & input$totalamount <300) {
+        15
+      } else if (input$totalamount >=300 & input$totalamount <400) {
+        20
+      } else if (input$totalamount >=400 & input$totalamount <500) {
+        25
+      } else if (input$totalamount >=500 & input$totalamount <=1000) {
+        50
+      } else {
+        60
+      }
+    } else if(input$type %in% c("GCash-In", "GCash-Out")) {
+      if (input$totalamount <1) {
+        0
+      } else if (input$totalamount <=250) {
+        5
+      } else if (input$totalamount >250 & input$totalamount <=500) {
+        10
+      } else if (input$totalamount >500 & input$totalamount <=750) {
+        15
+      } else if (input$totalamount >750 & input$totalamount <=1000) {
+        20
+      } else if (input$totalamount >1000 & input$totalamount <=1250) {
+        25
+      } else if (input$totalamount >1250 & input$totalamount <=1500) {
+        30
+      } else if (input$totalamount >1500 & input$totalamount <=1750) {
+        35
+      } else if (input$totalamount >1750 & input$totalamount <=2000) {
+        40
+      } else if (input$totalamount >2000 & input$totalamount <=2250) {
+        45
+      } else if (input$totalamount >2250 & input$totalamount <=2500) {
+        50
+      } else if (input$totalamount >2500 & input$totalamount <=2750) {
+        55
+      } else if (input$totalamount >2750 & input$totalamount <=3000) {
+        60
+      } else if (input$totalamount >3000 & input$totalamount <=3250) {
+        65
+      } else if (input$totalamount >3250 & input$totalamount <=3500) {
+        70
+      } else if (input$totalamount >3500 & input$totalamount <=3750) {
+        75
+      } else if (input$totalamount >3750 & input$totalamount <=4000) {
+        80
+      } else if (input$totalamount >4000 & input$totalamount <=4250) {
+        85
+      } else if (input$totalamount >4250 & input$totalamount <=4500) {
+        90
+      } else if (input$totalamount >4500 & input$totalamount <=4750) {
+        95
+      } else if (input$totalamount >4750 & input$totalamount <=5000) {
+        100
+      } else {
+        105
+      }
+    } else {
+      0
+    }
+    
+    new_entry <- data.frame(
+      Date = Sys.Date(),
+      Customer_Name = input$customer_name,
+      Mobile_Number = input$mobile,
+      Type = input$type,
+      Total_Amount = input$totalamount,  
+      Profit = profit,
+      stringsAsFactors = FALSE
+    )
+    
+    df <- data()
+    updated_df <- rbind(df, new_entry)
+    save_data(updated_df)
+    
+    updateTextInput(session, "customer_name", value = "")
+    updateTextInput(session, "mobile", value = "")
+    updateNumericInput(session, "totalamount", value = 0)
+    
+    showNotification("✅ Transaction Saved!", type = "message")
+  })
+  
+  observeEvent(input$deleterow, {
+    req(input$data_table_rows_selected)
+    selected_row <- input$data_table_rows_selected
+    df <- data()
+    df <- df[-selected_row, ]
+    save_data(df)
+  })
+  
+  observeEvent(input$clearhistory, {
+    empty_df <- data.frame(
+      Date = as.Date(character()),
+      Customer_Name = character(),
+      Mobile_Number = character(),
+      Type = character(),
+      Total_Amount = numeric(),
+      Profit = numeric(),
+      stringsAsFactors = FALSE
+    )
+    write.csv(empty_df, data_file, row.names = FALSE)
+    data(empty_df)  
+    showNotification("🧹 History cleared successfully!", type = "message")
+  })
+  
+  output$data_table <- renderDT({
+    datatable(data(), escape = FALSE, selection = "single")
+  })
+  
+  output$downloadData <- downloadHandler(
+    filename = function() {
+      paste("transactions-", Sys.Date(), ".csv", sep = "")
+    },
+    content = function(file) {
+      write.csv(data(), file, row.names = FALSE)
+    }
+  )
+  
+  observeEvent(input$undoBtn, {
+    if (length(history_stack$data) > 0) {
+      last_state <- tail(history_stack$data, 1)[[1]]
+      history_stack$data <- head(history_stack$data, -1)
+      
+      redo_stack$data <- append(redo_stack$data, list(data()))
+      
+      write.csv(last_state, data_file, row.names = FALSE)
+      data(last_state)
+      showNotification("↩️ Undo successful!", type = "message")
+    } else {
+      showNotification("⚠️ Nothing to undo!", type = "warning")
+    }
+  })
+  
+  observeEvent(input$redoBtn, {
+    if (length(redo_stack$data) > 0) {
+      next_state <- tail(redo_stack$data, 1)[[1]]
+      redo_stack$data <- head(redo_stack$data, -1)
+      
+      history_stack$data <- append(history_stack$data, list(data()))
+      
+      write.csv(next_state, data_file, row.names = FALSE)
+      data(next_state)
+      showNotification("🔁 Redo successful!", type = "message")
+    } else {
+      showNotification("⚠️ Nothing to redo!", type = "warning")
+    }
+  })
+  
+  # Transaction bar chart
+  output$transaction_bar_chart <- renderPlotly({
+    filtered <- filtered_data()
+    
+    if(nrow(filtered) == 0) {
+      return(plot_ly() %>% 
+               layout(title = "No data available for selected period",
+                      xaxis = list(title = ""),
+                      yaxis = list(title = "")))
+    }
+    
+    # Aggregate data by type
+    transaction_summary <- filtered %>%
+      group_by(Type) %>%
+      summarise(Total = sum(Total_Amount)) %>%
+      mutate(Percentage = Total / sum(Total) * 100) %>%
+      arrange(desc(Percentage))
+    
+    # Brown palette colors
+    colors <- c("#7B3F00", "#A0522D", "#CD853F")
+    
+    # Create horizontal bar chart with 3D effect
+    p <- plot_ly(transaction_summary, y = ~Type, x = ~Percentage, 
+                 type = 'bar', orientation = 'h',
+                 marker = list(color = colors,
+                               line = list(color = '#FF8C00', width = 1.5)),
+                 text = ~paste0(round(Percentage, 1), "% (₱", formatC(Total, format="f", digits=2, big.mark=","), ")"),
+                 textposition = 'auto',
+                 hoverinfo = 'text') %>%
+      layout(title = paste0("Highest Transactions (", 
+                            ifelse(input$time_frame == "Daily", format(input$selected_date, "%b %d, %Y"),
+                                   ifelse(input$time_frame == "Weekly", 
+                                          paste0("Week of ", format(input$selected_date - wday(input$selected_date) + 1, "%b %d")),
+                                          paste0(format(input$selected_date, "%B %Y")))), ")"),
+             xaxis = list(title = "Percentage of Total (%)",
+                          gridcolor = '#DEB887',
+                          zerolinecolor = '#DEB887'),
+             yaxis = list(title = "",
+                          gridcolor = '#DEB887',
+                          zerolinecolor = '#DEB887'),
+             plot_bgcolor = '#FFF5EB',
+             paper_bgcolor = '#FFF5EB',
+             font = list(color = '#7B3F00'),
+             margin = list(l = 100, r = 50, b = 50, t = 80, pad = 4),
+             bargap = 0.5) %>%
+      config(displayModeBar = FALSE)
+    
+    p
+  })
+  
+  # Profit pie chart
+  output$profit_pie_chart <- renderPlotly({
+    filtered <- filtered_data()
+    
+    if(nrow(filtered) == 0) {
+      return(plot_ly() %>% 
+               layout(title = "No profit data available for selected period",
+                      xaxis = list(title = ""),
+                      yaxis = list(title = "")))
+    }
+    
+    # Aggregate profit by type
+    profit_summary <- filtered %>%
+      group_by(Type) %>%
+      summarise(Total_Profit = sum(Profit)) %>%
+      arrange(desc(Total_Profit))
+    
+    # Brown palette colors
+    colors <- c("#7B3F00", "#A0522D", "#CD853F")
+    
+    # Create 3D pie chart
+    p <- plot_ly(profit_summary, labels = ~Type, values = ~Total_Profit, 
+                 type = 'pie',
+                 textposition = 'inside',
+                 textinfo = 'label+percent',
+                 insidetextfont = list(color = '#FFF'),
+                 hoverinfo = 'text',
+                 text = ~paste0("₱", Total_Profit),
+                 marker = list(colors = colors,
+                               line = list(color = '#FF8C00', width = 1.5)),
+                 hole = 0.4) %>%
+      layout(title = paste0("Profit Distribution (", 
+                            ifelse(input$time_frame == "Daily", format(input$selected_date, "%b %d, %Y"),
+                                   ifelse(input$time_frame == "Weekly", 
+                                          paste0("Week of ", format(input$selected_date - wday(input$selected_date) + 1, "%b %d")),
+                                          paste0(format(input$selected_date, "%B %Y")))), ")"),
+             showlegend = TRUE,
+             legend = list(orientation = "h", y = -0.1),
+             plot_bgcolor = '#FFF5EB',
+             paper_bgcolor = '#FFF5EB',
+             font = list(color = '#7B3F00'),
+             margin = list(l = 20, r = 20, b = 10, t = 80, pad = 0)) %>%
+      config(displayModeBar = FALSE)
+    
+    p
+  })
+  
+  # Total profit text
+  output$total_profit_text <- renderText({
+    filtered <- filtered_data()
+    
+    if(nrow(filtered) == 0) {
+      return("No profit data available for the selected period")
+    }
+    
+    total_profit <- sum(filtered$Profit)
+    
+    paste0("TOTAL PROFIT: ₱", formatC(total_profit, format="f", digits=2, big.mark=","))
+  })
+}
+
+shinyApp(ui = ui, server = server)
+  
