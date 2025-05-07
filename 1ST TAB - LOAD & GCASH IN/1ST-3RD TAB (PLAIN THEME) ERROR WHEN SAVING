@@ -1,0 +1,1425 @@
+library(shiny)
+library(DT)
+library(shinyjs)
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+library(plotly)
+library(bslib)
+
+# Data files
+transaction_file <- "transactions.csv"
+sales_file <- "sales_records.csv"
+
+# Initialize transaction file if it doesn't exist
+if (!file.exists(transaction_file)) {
+  write.csv(data.frame(
+    Date = as.Date(character()),
+    Customer_Name = character(),
+    Mobile_Number = character(),
+    Type = character(),
+    Total_Amount = numeric(),
+    Profit = numeric(),
+    stringsAsFactors = FALSE
+  ), transaction_file, row.names = FALSE)
+}
+
+# Initialize sales file if it doesn't exist
+if (!file.exists(sales_file)) {
+  write.csv(data.frame(
+    Date = as.Date(character()),
+    Product_Category = character(),
+    Product_Name = character(),
+    Quantity = numeric(),
+    Unit_Cost = numeric(),
+    Unit_Price = numeric(),
+    Profit = numeric(),
+    stringsAsFactors = FALSE
+  ), sales_file, row.names = FALSE)
+}
+
+# History stacks for undo/redo functionality
+transaction_history <- reactiveValues(data = list())
+transaction_redo <- reactiveValues(data = list())
+sales_history <- reactiveValues(data = list())
+sales_redo <- reactiveValues(data = list())
+
+ui <- fluidPage(
+  useShinyjs(),
+  theme = bs_theme(version = 5, bootswatch = "flatly"),
+  titlePanel("📊 Business Operations Dashboard", windowTitle = "Business Dashboard"),
+  
+  navbarPage(
+    id = "main_tabs",
+    title = NULL,
+    
+    # TAB 1: TRANSACTIONS
+    tabPanel("📋 Transactions", value = "transactions_tab",
+             sidebarLayout(
+               sidebarPanel(
+                 conditionalPanel(
+                   condition = "input.main_tabs == 'transactions_tab'",
+                   textInput("customer_name", "Customer Name:"),
+                   textInput("mobile", "Mobile Number:"),
+                   selectInput("type", "Transaction Type:",
+                               choices = c("Load", "GCash-In", "GCash-Out")),
+                   numericInput("totalamount", "Total Amount(₱):", value = 0),
+                   div(style = "text-align: right;",
+                       actionButton("submit", "💾 Save Transaction", class = "btn btn-primary")
+                   ),
+                   br(), br(),
+                   div(style = "text-align: right;",
+                       actionButton("deleterow", "🗑️ Delete Row", class = "btn btn-warning"),
+                       actionButton("undoBtn", "↩️ Undo", class = "btn btn-dark"),
+                       actionButton("redoBtn", "🔁 Redo", class = "btn btn-dark")
+                   ),
+                   br(), br(),
+                   div(style = "text-align: right;",
+                       downloadButton("downloadData", "📥 Download Transactions")
+                   ),
+                   br(), br()
+                 )
+               ),
+               mainPanel(
+                 DTOutput("data_table"), 
+                 br(),
+                 div(style = "text-align: right;",
+                     actionButton("clearhistory", "🧹 Clear History", class = "btn btn-danger")
+                 )
+               )
+             )
+    ),
+    
+    # TAB 2: RECORDS OF SALES
+    tabPanel("🛒 Records of Sales", value = "sales_tab",
+             sidebarLayout(
+               sidebarPanel(
+                 conditionalPanel(
+                   condition = "input.main_tabs == 'sales_tab'",
+                   selectInput("product_category", "Product Category:", 
+                               choices = c("A. Canned Goods", 
+                                           "B. Noodles", 
+                                           "C. Snacks / Biscuits", 
+                                           "D. Drinks / Beverages", 
+                                           "E. Condiments & Cooking Essentials", 
+                                           "F. Hygiene Products", 
+                                           "G. Cigarettes", 
+                                           "H. Ice/Ice Candy", 
+                                           "I. Household Items", 
+                                           "J. Others")),
+                   conditionalPanel(
+                     condition = "input.product_category == 'J. Others'",
+                     textInput("custom_category", "Specify Category:")
+                   ),
+                   textInput("product_name", "Product Name:"),
+                   numericInput("quantity", "Quantity:", value = 1, min = 1),
+                   numericInput("unit_cost", "Unit Cost (₱):", value = 0, min = 0),
+                   numericInput("unit_price", "Unit Price (₱):", value = 0, min = 0),
+                   div(
+                     style = "background-color: #f8f9fa; padding: 10px; border-radius: 5px; margin-bottom: 15px;",
+                     h5("Profit Calculation:"),
+                     uiOutput("profit_preview")
+                   ),
+                   div(style = "text-align: right;",
+                       actionButton("add_sale", "➕ Add and Record Sale", class = "btn btn-primary")
+                   ),
+                   br(), br(),
+                   div(style = "text-align: right;",
+                       actionButton("delete_sale_row", "🗑️ Delete Row", class = "btn btn-warning"),
+                       actionButton("undo_sale", "↩️ Undo", class = "btn btn-dark"),
+                       actionButton("redo_sale", "🔁 Redo", class = "btn btn-dark")
+                   ),
+                   br(), br(),
+                   div(style = "text-align: right;",
+                       downloadButton("download_sales", "📥 Download Sales (CSV)"),
+                       downloadButton("download_sales_excel", "📊 Download Sales (Excel)")
+                   )
+                 )
+               ),
+               mainPanel(
+                 h4("Sales Records"),
+                 DTOutput("sales_table"),
+                 br(),
+                 div(style = "text-align: right;",
+                     actionButton("clear_sales", "🧹 Clear Sales History", class = "btn btn-danger")
+                 ),
+                 br(),
+                 h4("Sales Summary"),
+                 tabsetPanel(
+                   tabPanel("Daily Summary", 
+                            div(
+                              style = "display: flex; flex-wrap: wrap;",
+                              div(
+                                style = "flex: 50%; padding: 10px;",
+                                h5("Highest Sales by Category Today"),
+                                plotlyOutput("daily_sales_bar")
+                              ),
+                              div(
+                                style = "flex: 50%; padding: 10px;",
+                                h5("Today's Profit Distribution"),
+                                plotlyOutput("daily_profit_pie")
+                              )
+                            ),
+                            br(),
+                            h5("Profit by Category Today"),
+                            tableOutput("daily_profit_table"),
+                            h4(textOutput("total_profit_today"), style = "text-align: center; font-weight: bold; margin-top: 20px;")
+                   ),
+                   tabPanel("Weekly Summary", 
+                            div(
+                              style = "display: flex; flex-wrap: wrap;",
+                              div(
+                                style = "flex: 50%; padding: 10px;",
+                                h5("Highest Sales by Category This Week"),
+                                plotlyOutput("weekly_sales_bar")
+                              ),
+                              div(
+                                style = "flex: 50%; padding: 10px;",
+                                h5("This Week's Profit Distribution"),
+                                plotlyOutput("weekly_profit_pie")
+                              )
+                            ),
+                            br(),
+                            h5("Profit by Category This Week"),
+                            tableOutput("weekly_profit_table"),
+                            h4(textOutput("total_profit_week"), style = "text-align: center; font-weight: bold; margin-top: 20px;")
+                   ),
+                   tabPanel("Monthly Summary", 
+                            div(
+                              style = "display: flex; flex-wrap: wrap;",
+                              div(
+                                style = "flex: 50%; padding: 10px;",
+                                h5("Highest Sales by Category This Month"),
+                                plotlyOutput("monthly_sales_bar")
+                              ),
+                              div(
+                                style = "flex: 50%; padding: 10px;",
+                                h5("This Month's Profit Distribution"),
+                                plotlyOutput("monthly_profit_pie")
+                              )
+                            ),
+                            br(),
+                            h5("Profit by Category This Month"),
+                            tableOutput("monthly_profit_table"),
+                            h4(textOutput("total_profit_month"), style = "text-align: center; font-weight: bold; margin-top: 20px;")
+                   )
+                 )
+               )
+             )
+    ),
+    
+    # TAB 3: STATISTICS AND VISUALS
+    tabPanel("📈 Statistics and Visuals", value = "stats_tab",
+             fluidRow(
+               column(12,
+                      br(),
+                      div(
+                        style = "display: flex; justify-content: space-between; align-items: center;",
+                        h4("Dashboard Analytics"),
+                        div(
+                          style = "display: flex; gap: 10px;",
+                          dateRangeInput("date_range", "Select Date Range:", 
+                                         start = Sys.Date() - 30, end = Sys.Date()),
+                          actionButton("apply_filter", "🔍 Apply Filter", class = "btn btn-primary")
+                        )
+                      ),
+                      hr()
+               )
+             ),
+             fluidRow(
+               column(6,
+                      card(
+                        card_header("Transaction Metrics"),
+                        plotlyOutput("transaction_metrics_chart", height = "300px"),
+                        br(),
+                        tableOutput("transaction_summary_table")
+                      )
+               ),
+               column(6,
+                      card(
+                        card_header("Sales Metrics"),
+                        plotlyOutput("sales_metrics_chart", height = "300px"),
+                        br(),
+                        tableOutput("sales_summary_table")
+                      )
+               )
+             ),
+             br(),
+             fluidRow(
+               column(12,
+                      card(
+                        card_header("Comparative Analysis"),
+                        tabsetPanel(
+                          tabPanel("Daily Comparison",
+                                   plotlyOutput("daily_comparison_chart", height = "400px")
+                          ),
+                          tabPanel("Weekly Trends",
+                                   plotlyOutput("weekly_trends_chart", height = "400px")
+                          ),
+                          tabPanel("Monthly Overview",
+                                   plotlyOutput("monthly_overview_chart", height = "400px")
+                          )
+                        )
+                      )
+               )
+             ),
+             br(),
+             fluidRow(
+               column(6,
+                      card(
+                        card_header("Key Performance Indicators"),
+                        div(
+                          style = "display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; padding: 15px;",
+                          div(class = "card", style = "padding: 15px; text-align: center;",
+                              h3(textOutput("total_transactions"), style = "margin: 0; color: #007bff;"),
+                              p("Total Transactions", style = "margin: 0;")
+                          ),
+                          div(class = "card", style = "padding: 15px; text-align: center;",
+                              h3(textOutput("total_sales"), style = "margin: 0; color: #28a745;"),
+                              p("Total Sales", style = "margin: 0;")
+                          ),
+                          div(class = "card", style = "padding: 15px; text-align: center;",
+                              h3(textOutput("avg_transaction_profit"), style = "margin: 0; color: #fd7e14;"),
+                              p("Avg. Transaction Profit", style = "margin: 0;")
+                          ),
+                          div(class = "card", style = "padding: 15px; text-align: center;",
+                              h3(textOutput("avg_sale_profit"), style = "margin: 0; color: #6f42c1;"),
+                              p("Avg. Sale Profit", style = "margin: 0;")
+                          )
+                        )
+                      )
+               ),
+               column(6,
+                      card(
+                        card_header("Revenue & Profit"),
+                        plotlyOutput("revenue_profit_chart", height = "300px")
+                      )
+               )
+             ),
+             br(),
+             fluidRow(
+               column(12,
+                      card(
+                        card_header("Top Performers"),
+                        div(
+                          style = "display: flex; flex-wrap: wrap;",
+                          div(
+                            style = "flex: 50%; padding: 10px;",
+                            h5("Most Profitable Transaction Types"),
+                            plotlyOutput("top_transaction_types", height = "300px")
+                          ),
+                          div(
+                            style = "flex: 50%; padding: 10px;",
+                            h5("Most Profitable Product Categories"),
+                            plotlyOutput("top_product_categories", height = "300px")
+                          )
+                        )
+                      )
+               )
+             )
+    )
+  )
+)
+
+server <- function(input, output, session) {
+  # --- TRANSACTIONS DATA MANAGEMENT ---
+  transactions_data <- reactiveVal()
+  
+  read_transactions <- function() {
+    df <- read.csv(transaction_file, stringsAsFactors = FALSE)
+    df$Date <- as.Date(df$Date)
+    return(df)
+  }
+  
+  transactions_data(read_transactions())
+  
+  save_transactions <- function(df) {
+    transaction_history$data <- append(transaction_history$data, list(transactions_data()))
+    transaction_redo$data <- list()
+    write.csv(df, transaction_file, row.names = FALSE)
+    transactions_data(df)
+  }
+  
+  # --- SALES DATA MANAGEMENT ---
+  sales_data <- reactiveVal()
+  
+  read_sales <- function() {
+    df <- read.csv(sales_file, stringsAsFactors = FALSE)
+    df$Date <- as.Date(df$Date)
+    return(df)
+  }
+  
+  sales_data(read_sales())
+  
+  save_sales <- function(df) {
+    sales_history$data <- append(sales_history$data, list(sales_data()))
+    sales_redo$data <- list()
+    write.csv(df, sales_file, row.names = FALSE)
+    sales_data(df)
+  }
+  
+  # --- TAB 1: TRANSACTIONS LOGIC ---
+  observeEvent(input$submit, {
+    req(input$customer_name, input$mobile, input$totalamount)
+    
+    mobile_digits <- gsub("[^0-9]", "", input$mobile)
+    if (nchar(mobile_digits) != 11) {
+      showNotification("❌ Invalid mobile number!", type = "error")
+      return()
+    }
+    
+    profit <- if(input$type == "Load") {
+      if(input$totalamount >=1 & input$totalamount <50) {
+        3
+      } else if (input$totalamount >=50 & input$totalamount <100) {
+        5
+      } else if (input$totalamount >=100 & input$totalamount <200) {
+        10
+      } else if (input$totalamount >=200 & input$totalamount <300) {
+        15
+      } else if (input$totalamount >=300 & input$totalamount <400) {
+        20
+      } else if (input$totalamount >=400 & input$totalamount <500) {
+        25
+      } else if (input$totalamount >=500 & input$totalamount <=1000) {
+        50
+      } else {
+        60
+      }
+    } else if(input$type %in% c("GCash-In", "GCash-Out")) {
+      if (input$totalamount <1) {
+        0
+      } else if (input$totalamount <=250) {
+        5
+      } else if (input$totalamount >250 & input$totalamount <=500) {
+        10
+      } else if (input$totalamount >500 & input$totalamount <=750) {
+        15
+      } else if (input$totalamount >750 & input$totalamount <=1000) {
+        20
+      } else if (input$totalamount >1000 & input$totalamount <=1250) {
+        25
+      } else if (input$totalamount >1250 & input$totalamount <=1500) {
+        30
+      } else if (input$totalamount >1500 & input$totalamount <=1750) {
+        35
+      } else if (input$totalamount >1750 & input$totalamount <=2000) {
+        40
+      } else if (input$totalamount >2000 & input$totalamount <=2250) {
+        45
+      } else if (input$totalamount >2250 & input$totalamount <=2500) {
+        50
+      } else if (input$totalamount >2500 & input$totalamount <=2750) {
+        55
+      } else if (input$totalamount >2750 & input$totalamount <=3000) {
+        60
+      } else if (input$totalamount >3000 & input$totalamount <=3250) {
+        65
+      } else if (input$totalamount >3250 & input$totalamount <=3500) {
+        70
+      } else if (input$totalamount >3500 & input$totalamount <=3750) {
+        75
+      } else if (input$totalamount >3750 & input$totalamount <=4000) {
+        80
+      } else if (input$totalamount >4000 & input$totalamount <=4250) {
+        85
+      } else if (input$totalamount >4250 & input$totalamount <=4500) {
+        90
+      } else if (input$totalamount >4500 & input$totalamount <=4750) {
+        95
+      } else if (input$totalamount >4750 & input$totalamount <=5000) {
+        100
+      } else {
+        105
+      }
+    } else {
+      0
+    }
+    
+    new_entry <- data.frame(
+      Date = Sys.Date(),
+      Customer_Name = input$customer_name,
+      Mobile_Number = input$mobile,
+      Type = input$type,
+      Total_Amount = input$totalamount,  
+      Profit = profit,
+      stringsAsFactors = FALSE
+    )
+    
+    df <- transactions_data()
+    updated_df <- rbind(df, new_entry)
+    save_transactions(updated_df)
+    
+    updateTextInput(session, "customer_name", value = "")
+    updateTextInput(session, "mobile", value = "")
+    updateNumericInput(session, "totalamount", value = 0)
+    
+    showNotification("✅ Transaction Saved!", type = "message")
+  })
+  
+  observeEvent(input$deleterow, {
+    req(input$data_table_rows_selected)
+    selected_row <- input$data_table_rows_selected
+    df <- transactions_data()
+    df <- df[-selected_row, ]
+    save_transactions(df)
+    showNotification("🗑️ Row deleted!", type = "message")
+  })
+  
+  observeEvent(input$clearhistory, {
+    showModal(modalDialog(
+      title = "⚠️ Confirm Clear History",
+      "Are you sure you want to clear all transaction history? This action cannot be undone.",
+      footer = tagList(
+        modalButton("Cancel"),
+        actionButton("confirm_clear", "Yes, Clear History", class = "btn btn-danger")
+      )
+    ))
+  })
+  
+  observeEvent(input$confirm_clear, {
+    empty_df <- data.frame(
+      Date = as.Date(character()),
+      Customer_Name = character(),
+      Mobile_Number = character(),
+      Type = character(),
+      Total_Amount = numeric(),
+      Profit = numeric(),
+      stringsAsFactors = FALSE
+    )
+    write.csv(empty_df, transaction_file, row.names = FALSE)
+    transactions_data(empty_df)
+    removeModal()
+    showNotification("🧹 History cleared successfully!", type = "message")
+  })
+  
+  output$data_table <- renderDT({
+    datatable(transactions_data(), 
+              escape = FALSE, 
+              selection = "single",
+              options = list(
+                dom = 'ftip',
+                pageLength = 10,
+                lengthMenu = c(5, 10, 15, 20),
+                order = list(list(0, 'desc'))
+              ))
+  })
+  
+  output$downloadData <- downloadHandler(
+    filename = function() {
+      paste("transactions-", Sys.Date(), ".csv", sep = "")
+    },
+    content = function(file) {
+      write.csv(transactions_data(), file, row.names = FALSE)
+    }
+  )
+  
+  observeEvent(input$undoBtn, {
+    if (length(transaction_history$data) > 0) {
+      last_state <- tail(transaction_history$data, 1)[[1]]
+      transaction_history$data <- head(transaction_history$data, -1)
+      
+      transaction_redo$data <- append(transaction_redo$data, list(transactions_data()))
+      
+      write.csv(last_state, transaction_file, row.names = FALSE)
+      transactions_data(last_state)
+      showNotification("↩️ Undo successful!", type = "message")
+    } else {
+      showNotification("⚠️ Nothing to undo!", type = "warning")
+    }
+  })
+  
+  observeEvent(input$redoBtn, {
+    if (length(transaction_redo$data) > 0) {
+      next_state <- tail(transaction_redo$data, 1)[[1]]
+      transaction_redo$data <- head(transaction_redo$data, -1)
+      
+      transaction_history$data <- append(transaction_history$data, list(transactions_data()))
+      
+      write.csv(next_state, transaction_file, row.names = FALSE)
+      transactions_data(next_state)
+      showNotification("🔁 Redo successful!", type = "message")
+    } else {
+      showNotification("⚠️ Nothing to redo!", type = "warning")
+    }
+  })
+  
+  # --- TAB 2: SALES RECORDS LOGIC ---
+  
+  # Calculate profit preview
+  output$profit_preview <- renderUI({
+    cost <- input$unit_cost
+    price <- input$unit_price
+    qty <- input$quantity
+    
+    profit <- (price - cost) * qty
+    
+    color <- if(profit > 0) "green" else if(profit < 0) "red" else "black"
+    
+    div(
+      p(
+        "Unit Profit: ",
+        span(style = paste0("font-weight: bold; color: ", color), "₱", price - cost)
+      ),
+      p(
+        "Total Profit: ",
+        span(style = paste0("font-weight: bold; color: ", color), "₱", profit)
+      )
+    )
+  })
+  
+  # Add sale record
+  observeEvent(input$add_sale, {
+    req(input$product_name, input$quantity, input$unit_cost, input$unit_price)
+    
+    category <- ifelse(input$product_category == "J. Others" && !is.null(input$custom_category),
+                       paste0("J. ", input$custom_category),
+                       input$product_category)
+    
+    profit <- (input$unit_price - input$unit_cost) * input$quantity
+    
+    new_sale <- data.frame(
+      Date = Sys.Date(),
+      Product_Category = category,
+      Product_Name = input$product_name,
+      Quantity = input$quantity,
+      Unit_Cost = input$unit_cost,
+      Unit_Price = input$unit_price,
+      Profit = profit,
+      stringsAsFactors = FALSE
+    )
+    
+    df <- sales_data()
+    updated_df <- rbind(df, new_sale)
+    save_sales(updated_df)
+    
+    updateTextInput(session, "product_name", value = "")
+    updateNumericInput(session, "quantity", value = 1)
+    updateNumericInput(session, "unit_cost", value = 0)
+    updateNumericInput(session, "unit_price", value = 0)
+    if(input$product_category == "J. Others") {
+      updateTextInput(session, "custom_category", value = "")
+    }
+    
+    showNotification("✅ Sale Record Added!", type = "message")
+  })
+  
+  # Delete sale record
+  observeEvent(input$delete_sale_row, {
+    req(input$sales_table_rows_selected)
+    selected_row <- input$sales_table_rows_selected
+    df <- sales_data()
+    df <- df[-selected_row, ]
+    save_sales(df)
+    showNotification("🗑️ Sale Record Deleted!", type = "message")
+  })
+  
+  # Clear sales history
+  observeEvent(input$clear_sales, {
+    showModal(modalDialog(
+      title = "⚠️ Confirm Clear Sales History",
+      "Are you sure you want to clear all sales records? This action cannot be undone.",
+      footer = tagList(
+        modalButton("Cancel"),
+        actionButton("confirm_clear_sales", "Yes, Clear Sales", class = "btn btn-danger")
+      )
+    ))
+  })
+  
+  observeEvent(input$confirm_clear_sales, {
+    empty_df <- data.frame(
+      Date = as.Date(character()),
+      Product_Category = character(),
+      Product_Name = character(),
+      Quantity = numeric(),
+      Unit_Cost = numeric(),
+      Unit_Price = numeric(),
+      Profit = numeric(),
+      stringsAsFactors = FALSE
+    )
+    write.csv(empty_df, sales_file, row.names = FALSE)
+    sales_data(empty_df)
+    removeModal()
+    showNotification("🧹 Sales history cleared successfully!", type = "message")
+  })
+  
+  # Undo sale action
+  observeEvent(input$undo_sale, {
+    if (length(sales_history$data) > 0) {
+      last_state <- tail(sales_history$data, 1)[[1]]
+      sales_history$data <- head(sales_history$data, -1)
+      
+      sales_redo$data <- append(sales_redo$data, list(sales_data()))
+      
+      write.csv(last_state, sales_file, row.names = FALSE)
+      sales_data(last_state)
+      showNotification("↩️ Undo successful!", type = "message")
+    } else {
+      showNotification("⚠️ Nothing to undo!", type = "warning")
+    }
+  })
+  
+  # Redo sale action
+  observeEvent(input$redo_sale, {
+    if (length(sales_redo$data) > 0) {
+      next_state <- tail(sales_redo$data, 1)[[1]]
+      sales_redo$data <- head(sales_redo$data, -1)
+      
+      sales_history$data <- append(sales_history$data, list(sales_data()))
+      
+      write.csv(next_state, sales_file, row.names = FALSE)
+      sales_data(next_state)
+      showNotification("🔁 Redo successful!", type = "message")
+    } else {
+      showNotification("⚠️ Nothing to redo!", type = "warning")
+    }
+  })
+  
+  # Render sales table
+  output$sales_table <- renderDT({
+    datatable(sales_data(), 
+              escape = FALSE, 
+              selection = "single",
+              options = list(
+                dom = 'ftip',
+                pageLength = 10,
+                lengthMenu = c(5, 10, 15, 20),
+                order = list(list(0, 'desc'))
+              ))
+  })
+  
+  # Download sales data as CSV
+  output$download_sales <- downloadHandler(
+    filename = function() {
+      paste("sales-records-", Sys.Date(), ".csv", sep = "")
+    },
+    content = function(file) {
+      write.csv(sales_data(), file, row.names = FALSE)
+    }
+  )
+  
+  # Download sales data as Excel
+  output$download_sales_excel <- downloadHandler(
+    filename = function() {
+      paste("sales-records-", Sys.Date(), ".xlsx", sep = "")
+    },
+    content = function(file) {
+      # Using openxlsx package to create Excel file
+      if (!requireNamespace("openxlsx", quietly = TRUE)) {
+        install.packages("openxlsx")
+        library(openxlsx)
+      } else {
+        library(openxlsx)
+      }
+      
+      wb <- createWorkbook()
+      addWorksheet(wb, "Sales Records")
+      writeData(wb, sheet = 1, sales_data())
+      saveWorkbook(wb, file, overwrite = TRUE)
+    }
+  )
+  
+  # --- SALES SUMMARY VISUALIZATIONS ---
+  
+  # Helper function to filter by date range
+  filter_by_date_range <- function(df, start_date, end_date) {
+    df %>% filter(Date >= start_date & Date <= end_date)
+  }
+  
+  # Helper function to extract category letter
+  extract_category <- function(category) {
+    substr(category, 1, 1)
+  }
+  
+  # Daily Sales Bar Chart
+  output$daily_sales_bar <- renderPlotly({
+    req(sales_data())
+    today <- Sys.Date()
+    daily_data <- sales_data() %>% 
+      filter(Date == today) %>%
+      mutate(Category = sapply(Product_Category, extract_category)) %>%
+      group_by(Category) %>%
+      summarise(Total_Sales = sum(Quantity * Unit_Price))
+    
+    if(nrow(daily_data) == 0) {
+      return(plot_ly() %>% add_annotations(text = "No sales data for today", showarrow = FALSE))
+    }
+    
+    plot_ly(daily_data, x = ~Category, y = ~Total_Sales, type = "bar", 
+            marker = list(color = ~Total_Sales, colorscale = "Viridis")) %>%
+      layout(title = "", 
+             xaxis = list(title = "Category"),
+             yaxis = list(title = "Total Sales (₱)"))
+  })
+  
+  # Daily Profit Pie Chart
+  output$daily_profit_pie <- renderPlotly({
+    req(sales_data())
+    today <- Sys.Date()
+    daily_data <- sales_data() %>% 
+      filter(Date == today) %>%
+      mutate(Category = sapply(Product_Category, extract_category)) %>%
+      group_by(Category) %>%
+      summarise(Total_Profit = sum(Profit))
+    
+    if(nrow(daily_data) == 0) {
+      return(plot_ly() %>% add_annotations(text = "No profit data for today", showarrow = FALSE))
+    }
+    
+    plot_ly(daily_data, labels = ~Category, values = ~Total_Profit, type = "pie",
+            marker = list(colors = colorRampPalette(c("#4287f5", "#42f5a7"))(nrow(daily_data)))) %>%
+      layout(title = "")
+  })
+  
+  # Daily Profit Table
+  output$daily_profit_table <- renderTable({
+    req(sales_data())
+    today <- Sys.Date()
+    
+    daily_data <- sales_data() %>% 
+      filter(Date == today) %>%
+      mutate(Category = sapply(Product_Category, extract_category)) %>%
+      group_by(Category, Product_Category) %>%
+      summarise(Total_Profit = sum(Profit), .groups = "drop") %>%
+      arrange(Category)
+    
+    if(nrow(daily_data) == 0) {
+      return(data.frame(Message = "No profit data for today"))
+    }
+    
+    daily_data
+  })
+  
+  # Total Profit Today
+  output$total_profit_today <- renderText({
+    req(sales_data())
+    today <- Sys.Date()
+    
+    total_profit <- sales_data() %>% 
+      filter(Date == today) %>%
+      summarise(Total = sum(Profit)) %>%
+      pull(Total)
+    
+    if(length(total_profit) == 0 || is.na(total_profit)) {
+      return("Total Profit Today: ₱0.00")
+    }
+    
+    paste("Total Profit Today: ₱", format(total_profit, big.mark = ",", digits = 2, nsmall = 2))
+  })
+  
+  # Weekly Sales Bar Chart
+  output$weekly_sales_bar <- renderPlotly({
+    req(sales_data())
+    today <- Sys.Date()
+    week_start <- today - wday(today) + 1
+    
+    weekly_data <- sales_data() %>% 
+      filter(Date >= week_start & Date <= today) %>%
+      mutate(Category = sapply(Product_Category, extract_category)) %>%
+      group_by(Category) %>%
+      summarise(Total_Sales = sum(Quantity * Unit_Price))
+    
+    if(nrow(weekly_data) == 0) {
+      return(plot_ly() %>% add_annotations(text = "No sales data for this week", showarrow = FALSE))
+    }
+    
+    plot_ly(weekly_data, x = ~Category, y = ~Total_Sales, type = "bar", 
+            marker = list(color = ~Total_Sales, colorscale = "Viridis")) %>%
+      layout(title = "", 
+             xaxis = list(title = "Category"),
+             yaxis = list(title = "Total Sales (₱)"))
+  })
+  
+  # Weekly Profit Pie Chart
+  output$weekly_profit_pie <- renderPlotly({
+    req(sales_data())
+    today <- Sys.Date()
+    week_start <- today - wday(today) + 1
+    
+    weekly_data <- sales_data() %>% 
+      filter(Date >= week_start & Date <= today) %>%
+      mutate(Category = sapply(Product_Category, extract_category)) %>%
+      group_by(Category) %>%
+      summarise(Total_Profit = sum(Profit))
+    
+    if(nrow(weekly_data) == 0) {
+      return(plot_ly() %>% add_annotations(text = "No profit data for this week", showarrow = FALSE))
+    }
+    
+    plot_ly(weekly_data, labels = ~Category, values = ~Total_Profit, type = "pie",
+            marker = list(colors = colorRampPalette(c("#4287f5", "#42f5a7"))(nrow(weekly_data)))) %>%
+      layout(title = "")
+  })
+  
+  # Weekly Profit Table
+  output$weekly_profit_table <- renderTable({
+    req(sales_data())
+    today <- Sys.Date()
+    week_start <- today - wday(today) + 1
+    
+    weekly_data <- sales_data() %>% 
+      filter(Date >= week_start & Date <= today) %>%
+      mutate(Category = sapply(Product_Category, extract_category)) %>%
+      group_by(Category, Product_Category) %>%
+      summarise(Total_Profit = sum(Profit), .groups = "drop") %>%
+      arrange(Category)
+    
+    if(nrow(weekly_data) == 0) {
+      return(data.frame(Message = "No profit data for this week"))
+    }
+    
+    weekly_data
+  })
+  
+  # Total Profit This Week
+  output$total_profit_week <- renderText({
+    req(sales_data())
+    today <- Sys.Date()
+    week_start <- today - wday(today) + 1
+    
+    total_profit <- sales_data() %>% 
+      filter(Date >= week_start & Date <= today) %>%
+      summarise(Total = sum(Profit)) %>%
+      pull(Total)
+    
+    if(length(total_profit) == 0 || is.na(total_profit)) {
+      return("Total Profit This Week: ₱0.00")
+    }
+    
+    paste("Total Profit This Week: ₱", format(total_profit, big.mark = ",", digits = 2, nsmall = 2))
+  })
+  
+  # Monthly Sales Bar Chart
+  output$monthly_sales_bar <- renderPlotly({
+    req(sales_data())
+    today <- Sys.Date()
+    month_start <- floor_date(today, "month")
+    
+    monthly_data <- sales_data() %>% 
+      filter(Date >= month_start & Date <= today) %>%
+      mutate(Category = sapply(Product_Category, extract_category)) %>%
+      group_by(Category) %>%
+      summarise(Total_Sales = sum(Quantity * Unit_Price))
+    
+    if(nrow(monthly_data) == 0) {
+      return(plot_ly() %>% add_annotations(text = "No sales data for this month", showarrow = FALSE))
+    }
+    
+    plot_ly(monthly_data, x = ~Category, y = ~Total_Sales, type = "bar", 
+            marker = list(color = ~Total_Sales, colorscale = "Viridis")) %>%
+      layout(title = "", 
+             xaxis = list(title = "Category"),
+             yaxis = list(title = "Total Sales (₱)"))
+  })
+  
+  # Monthly Profit Pie Chart
+  output$monthly_profit_pie <- renderPlotly({
+    req(sales_data())
+    today <- Sys.Date()
+    month_start <- floor_date(today, "month")
+    
+    monthly_data <- sales_data() %>% 
+      filter(Date >= month_start & Date <= today) %>%
+      mutate(Category = sapply(Product_Category, extract_category)) %>%
+      group_by(Category) %>%
+      summarise(Total_Profit = sum(Profit))
+    
+    if(nrow(monthly_data) == 0) {
+      return(plot_ly() %>% add_annotations(text = "No profit data for this month", showarrow = FALSE))
+    }
+    
+    plot_ly(monthly_data, labels = ~Category, values = ~Total_Profit, type = "pie",
+            marker = list(colors = colorRampPalette(c("#4287f5", "#42f5a7"))(nrow(monthly_data)))) %>%
+      layout(title = "")
+  })
+  
+  # Monthly Profit Table
+  output$monthly_profit_table <- renderTable({
+    req(sales_data())
+    today <- Sys.Date()
+    month_start <- floor_date(today, "month")
+    
+    monthly_data <- sales_data() %>% 
+      filter(Date >= month_start & Date <= today) %>%
+      mutate(Category = sapply(Product_Category, extract_category)) %>%
+      group_by(Category, Product_Category) %>%
+      summarise(Total_Profit = sum(Profit), .groups = "drop") %>%
+      arrange(Category)
+    
+    if(nrow(monthly_data) == 0) {
+      return(data.frame(Message = "No profit data for this month"))
+    }
+    
+    monthly_data
+  })
+  
+  # Total Profit This Month
+  output$total_profit_month <- renderText({
+    req(sales_data())
+    today <- Sys.Date()
+    month_start <- floor_date(today, "month")
+    
+    total_profit <- sales_data() %>% 
+      filter(Date >= month_start & Date <= today) %>%
+      summarise(Total = sum(Profit)) %>%
+      pull(Total)
+    
+    if(length(total_profit) == 0 || is.na(total_profit)) {
+      return("Total Profit This Month: ₱0.00")
+    }
+    
+    paste("Total Profit This Month: ₱", format(total_profit, big.mark = ",", digits = 2, nsmall = 2))
+  })
+  
+  # --- TAB 3: STATISTICS AND VISUALS LOGIC ---
+  
+  # Reactive date filter
+  filtered_data <- reactiveValues(
+    transactions = NULL,
+    sales = NULL
+  )
+  
+  observeEvent(input$apply_filter, {
+    req(input$date_range)
+    
+    filtered_data$transactions <- transactions_data() %>%
+      filter(Date >= input$date_range[1] & Date <= input$date_range[2])
+    
+    filtered_data$sales <- sales_data() %>%
+      filter(Date >= input$date_range[1] & Date <= input$date_range[2])
+    
+    showNotification("📅 Date filter applied successfully!", type = "message")
+  })
+  
+  # Initialize with current data on load
+  observe({
+    if(is.null(filtered_data$transactions)) {
+      filtered_data$transactions <- transactions_data()
+    }
+    if(is.null(filtered_data$sales)) {
+      filtered_data$sales <- sales_data()
+    }
+  })
+  
+  # Transaction Metrics Chart
+  output$transaction_metrics_chart <- renderPlotly({
+    req(filtered_data$transactions)
+    
+    if(nrow(filtered_data$transactions) == 0) {
+      return(plot_ly() %>% add_annotations(text = "No transaction data for selected period", showarrow = FALSE))
+    }
+    
+    transaction_summary <- filtered_data$transactions %>%
+      group_by(Type) %>%
+      summarise(
+        Count = n(),
+        Total_Amount = sum(Total_Amount),
+        Total_Profit = sum(Profit)
+      )
+    
+    plot_ly(transaction_summary) %>%
+      add_trace(x = ~Type, y = ~Total_Profit, type = "bar", name = "Profit",
+                marker = list(color = "#28a745")) %>%
+      add_trace(x = ~Type, y = ~Count, type = "scatter", mode = "markers", 
+                name = "Count", yaxis = "y2", 
+                marker = list(size = ~Count*2, color = "#007bff")) %>%
+      layout(
+        yaxis = list(title = "Profit (₱)", side = "left"),
+        yaxis2 = list(title = "Count", side = "right", overlaying = "y"),
+        xaxis = list(title = "Transaction Type"),
+        margin = list(l = 50, r = 50, b = 50, t = 20),
+        legend = list(orientation = "h", xanchor = "center", x = 0.5, y = -0.2)
+      )
+  })
+  
+  # Transaction Summary Table
+  output$transaction_summary_table <- renderTable({
+    req(filtered_data$transactions)
+    
+    if(nrow(filtered_data$transactions) == 0) {
+      return(data.frame(Message = "No transaction data for selected period"))
+    }
+    
+    filtered_data$transactions %>%
+      group_by(Type) %>%
+      summarise(
+        Count = n(),
+        Total_Amount = sum(Total_Amount),
+        Avg_Amount = mean(Total_Amount),
+        Total_Profit = sum(Profit),
+        Profit_Per_Transaction = mean(Profit)
+      ) %>%
+      arrange(desc(Total_Profit))
+  })
+  
+  # Sales Metrics Chart
+  output$sales_metrics_chart <- renderPlotly({
+    req(filtered_data$sales)
+    
+    if(nrow(filtered_data$sales) == 0) {
+      return(plot_ly() %>% add_annotations(text = "No sales data for selected period", showarrow = FALSE))
+    }
+    
+    sales_summary <- filtered_data$sales %>%
+      mutate(Category = sapply(Product_Category, extract_category)) %>%
+      group_by(Category) %>%
+      summarise(
+        Total_Items = sum(Quantity),
+        Total_Revenue = sum(Unit_Price * Quantity),
+        Total_Profit = sum(Profit)
+      )
+    
+    plot_ly(sales_summary) %>%
+      add_trace(x = ~Category, y = ~Total_Profit, type = "bar", name = "Profit",
+                marker = list(color = "#28a745")) %>%
+      add_trace(x = ~Category, y = ~Total_Items, type = "scatter", mode = "markers", 
+                name = "Items Sold", yaxis = "y2", 
+                marker = list(size = ~Total_Items, color = "#007bff")) %>%
+      layout(
+        yaxis = list(title = "Profit (₱)", side = "left"),
+        yaxis2 = list(title = "Items Sold", side = "right", overlaying = "y"),
+        xaxis = list(title = "Product Category"),
+        margin = list(l = 50, r = 50, b = 50, t = 20),
+        legend = list(orientation = "h", xanchor = "center", x = 0.5, y = -0.2)
+      )
+  })
+  
+  # Sales Summary Table
+  output$sales_summary_table <- renderTable({
+    req(filtered_data$sales)
+    
+    if(nrow(filtered_data$sales) == 0) {
+      return(data.frame(Message = "No sales data for selected period"))
+    }
+    
+    filtered_data$sales %>%
+      mutate(Category = sapply(Product_Category, extract_category)) %>%
+      group_by(Category, Product_Category) %>%
+      summarise(
+        Items_Sold = sum(Quantity),
+        Revenue = sum(Unit_Price * Quantity),
+        Cost = sum(Unit_Cost * Quantity),
+        Profit = sum(Profit),
+        Profit_Margin = (sum(Profit) / sum(Unit_Price * Quantity)) * 100,
+        .groups = "drop"
+      ) %>%
+      arrange(desc(Profit))
+  })
+  
+  # Daily Comparison Chart
+  output$daily_comparison_chart <- renderPlotly({
+    req(filtered_data$transactions, filtered_data$sales)
+    
+    date_range <- seq.Date(from = input$date_range[1], to = input$date_range[2], by = "day")
+    
+    if(length(date_range) > 60) {
+      showNotification("⚠️ Date range too large for daily comparison. Showing last 60 days.", type = "warning")
+      date_range <- tail(date_range, 60)
+    }
+    
+    # Aggregate transaction data by day
+    transaction_daily <- filtered_data$transactions %>%
+      filter(Date %in% date_range) %>%
+      group_by(Date) %>%
+      summarise(Transaction_Profit = sum(Profit))
+    
+    # Aggregate sales data by day
+    sales_daily <- filtered_data$sales %>%
+      filter(Date %in% date_range) %>%
+      group_by(Date) %>%
+      summarise(Sales_Profit = sum(Profit))
+    
+    # Create a complete date frame and merge data
+    daily_data <- data.frame(Date = date_range) %>%
+      left_join(transaction_daily, by = "Date") %>%
+      left_join(sales_daily, by = "Date") %>%
+      mutate(
+        Transaction_Profit = ifelse(is.na(Transaction_Profit), 0, Transaction_Profit),
+        Sales_Profit = ifelse(is.na(Sales_Profit), 0, Sales_Profit),
+        Total_Profit = Transaction_Profit + Sales_Profit
+      )
+    
+    plot_ly() %>%
+      add_trace(data = daily_data, x = ~Date, y = ~Transaction_Profit, type = "bar", name = "Transaction Profit",
+                marker = list(color = "#007bff")) %>%
+      add_trace(data = daily_data, x = ~Date, y = ~Sales_Profit, type = "bar", name = "Sales Profit",
+                marker = list(color = "#28a745")) %>%
+      add_trace(data = daily_data, x = ~Date, y = ~Total_Profit, type = "scatter", mode = "lines+markers",
+                name = "Total Profit", line = list(color = "red", width = 2)) %>%
+      layout(
+        title = "Daily Profit Comparison",
+        barmode = "stack",
+        yaxis = list(title = "Profit (₱)"),
+        xaxis = list(title = "Date"),
+        legend = list(orientation = "h", xanchor = "center", x = 0.5, y = -0.2)
+      )
+  })
+  
+  # Weekly Trends Chart
+  output$weekly_trends_chart <- renderPlotly({
+    req(filtered_data$transactions, filtered_data$sales)
+    
+    # Combine and process data
+    transaction_weekly <- filtered_data$transactions %>%
+      mutate(Week = floor_date(Date, "week")) %>%
+      group_by(Week) %>%
+      summarise(
+        Transaction_Count = n(),
+        Transaction_Amount = sum(Total_Amount),
+        Transaction_Profit = sum(Profit)
+      )
+    
+    sales_weekly <- filtered_data$sales %>%
+      mutate(Week = floor_date(Date, "week")) %>%
+      group_by(Week) %>%
+      summarise(
+        Sales_Count = n(),
+        Sales_Amount = sum(Unit_Price * Quantity),
+        Sales_Profit = sum(Profit)
+      )
+    
+    # Merge weekly data
+    weekly_data <- full_join(transaction_weekly, sales_weekly, by = "Week") %>%
+      mutate(
+        Transaction_Count = ifelse(is.na(Transaction_Count), 0, Transaction_Count),
+        Transaction_Amount = ifelse(is.na(Transaction_Amount), 0, Transaction_Amount),
+        Transaction_Profit = ifelse(is.na(Transaction_Profit), 0, Transaction_Profit),
+        Sales_Count = ifelse(is.na(Sales_Count), 0, Sales_Count),
+        Sales_Amount = ifelse(is.na(Sales_Amount), 0, Sales_Amount),
+        Sales_Profit = ifelse(is.na(Sales_Profit), 0, Sales_Profit),
+        Total_Profit = Transaction_Profit + Sales_Profit
+      ) %>%
+      arrange(Week)
+    
+    if(nrow(weekly_data) == 0) {
+      return(plot_ly() %>% add_annotations(text = "No data for weekly trends", showarrow = FALSE))
+    }
+    
+    plot_ly() %>%
+      add_trace(data = weekly_data, x = ~Week, y = ~Transaction_Profit, type = "scatter", mode = "lines+markers",
+                name = "Transaction Profit", line = list(color = "#007bff")) %>%
+      add_trace(data = weekly_data, x = ~Week, y = ~Sales_Profit, type = "scatter", mode = "lines+markers",
+                name = "Sales Profit", line = list(color = "#28a745")) %>%
+      add_trace(data = weekly_data, x = ~Week, y = ~Total_Profit, type = "scatter", mode = "lines+markers",
+                name = "Total Profit", line = list(color = "red", width = 2)) %>%
+      layout(
+        title = "Weekly Profit Trends",
+        yaxis = list(title = "Profit (₱)"),
+        xaxis = list(title = "Week"),
+        legend = list(orientation = "h", xanchor = "center", x = 0.5, y = -0.2)
+      )
+  })
+  
+  # Monthly Overview Chart
+  output$monthly_overview_chart <- renderPlotly({
+    req(filtered_data$transactions, filtered_data$sales)
+    
+    # Combine and process data
+    transaction_monthly <- filtered_data$transactions %>%
+      mutate(Month = floor_date(Date, "month")) %>%
+      group_by(Month) %>%
+      summarise(
+        Transaction_Count = n(),
+        Transaction_Amount = sum(Total_Amount),
+        Transaction_Profit = sum(Profit)
+      )
+    
+    sales_monthly <- filtered_data$sales %>%
+      mutate(Month = floor_date(Date, "month")) %>%
+      group_by(Month) %>%
+      summarise(
+        Sales_Count = n(),
+        Sales_Amount = sum(Unit_Price * Quantity),
+        Sales_Profit = sum(Profit)
+      )
+    
+    # Merge monthly data
+    monthly_data <- full_join(transaction_monthly, sales_monthly, by = "Month") %>%
+      mutate(
+        Transaction_Count = ifelse(is.na(Transaction_Count), 0, Transaction_Count),
+        Transaction_Amount = ifelse(is.na(Transaction_Amount), 0, Transaction_Amount),
+        Transaction_Profit = ifelse(is.na(Transaction_Profit), 0, Transaction_Profit),
+        Sales_Count = ifelse(is.na(Sales_Count), 0, Sales_Count),
+        Sales_Amount = ifelse(is.na(Sales_Amount), 0, Sales_Amount),
+        Sales_Profit = ifelse(is.na(Sales_Profit), 0, Sales_Profit),
+        Total_Profit = Transaction_Profit + Sales_Profit,
+        Month_Label = format(Month, "%b %Y")
+      ) %>%
+      arrange(Month)
+    
+    if(nrow(monthly_data) == 0) {
+      return(plot_ly() %>% add_annotations(text = "No data for monthly overview", showarrow = FALSE))
+    }
+    
+    plot_ly(monthly_data, x = ~Month_Label) %>%
+      add_trace(y = ~Transaction_Amount, type = "bar", name = "Transaction Amount",
+                marker = list(color = "rgba(0, 123, 255, 0.5)")) %>%
+      add_trace(y = ~Sales_Amount, type = "bar", name = "Sales Amount",
+                marker = list(color = "rgba(40, 167, 69, 0.5)")) %>%
+      add_trace(y = ~Total_Profit, type = "scatter", mode = "lines+markers",
+                name = "Total Profit", line = list(color = "red", width = 2)) %>%
+      layout(
+        title = "Monthly Business Overview",
+        barmode = "group",
+        yaxis = list(title = "Amount (₱)"),
+        xaxis = list(title = "Month", categoryorder = "array", categoryarray = ~Month_Label),
+        legend = list(orientation = "h", xanchor = "center", x = 0.5, y = -0.2)
+      )
+  })
+  
+  # Key Performance Indicators
+  output$total_transactions <- renderText({
+    req(filtered_data$transactions)
+    nrow(filtered_data$transactions)
+  })
+  
+  output$total_sales <- renderText({
+    req(filtered_data$sales)
+    sum(filtered_data$sales$Quantity)
+  })
+  
+  output$avg_transaction_profit <- renderText({
+    req(filtered_data$transactions)
+    
+    if(nrow(filtered_data$transactions) == 0) {
+      return("₱0.00")
+    }
+    
+    avg_profit <- mean(filtered_data$transactions$Profit)
+    paste0("₱", format(avg_profit, big.mark = ",", digits = 2, nsmall = 2))
+  })
+  
+  output$avg_sale_profit <- renderText({
+    req(filtered_data$sales)
+    
+    if(nrow(filtered_data$sales) == 0) {
+      return("₱0.00")
+    }
+    
+    avg_profit <- mean(filtered_data$sales$Profit)
+    paste0("₱", format(avg_profit, big.mark = ",", digits = 2, nsmall = 2))
+  })
+  
+  # Revenue & Profit Chart
+  output$revenue_profit_chart <- renderPlotly({
+    req(filtered_data$transactions, filtered_data$sales)
+    
+    # Calculate total transaction revenue and profit
+    total_transaction_amount <- sum(filtered_data$transactions$Total_Amount, na.rm = TRUE)
+    total_transaction_profit <- sum(filtered_data$transactions$Profit, na.rm = TRUE)
+    
+    # Calculate total sales revenue and profit
+    total_sales_revenue <- sum(filtered_data$sales$Unit_Price * filtered_data$sales$Quantity, na.rm = TRUE)
+    total_sales_cost <- sum(filtered_data$sales$Unit_Cost * filtered_data$sales$Quantity, na.rm = TRUE)
+    total_sales_profit <- sum(filtered_data$sales$Profit, na.rm = TRUE)
+    
+    # Create summary data frame
+    summary_data <- data.frame(
+      Category = c("Transaction Services", "Product Sales"),
+      Revenue = c(total_transaction_amount, total_sales_revenue),
+      Cost = c(total_transaction_amount - total_transaction_profit, total_sales_cost),
+      Profit = c(total_transaction_profit, total_sales_profit)
+    )
+    
+    # Add total row
+    total_row <- data.frame(
+      Category = "Total",
+      Revenue = sum(summary_data$Revenue),
+      Cost = sum(summary_data$Cost),
+      Profit = sum(summary_data$Profit)
+    )
+    
+    summary_data <- rbind(summary_data, total_row)
+    
+    # Calculate profit margins
+    summary_data$Profit_Margin <- (summary_data$Profit / summary_data$Revenue) * 100
+    
+    # Create the plot
+    plot_ly(summary_data, x = ~Category, y = ~Revenue, type = "bar", name = "Revenue",
+            marker = list(color = "rgba(0, 123, 255, 0.7)")) %>%
+      add_trace(y = ~Profit, name = "Profit", marker = list(color = "rgba(40, 167, 69, 0.7)")) %>%
+      add_trace(y = ~Profit_Margin, type = "scatter", mode = "lines+markers", name = "Profit Margin %", 
+                yaxis = "y2", marker = list(color = "red"), line = list(color = "red")) %>%
+      layout(
+        yaxis = list(title = "Amount (₱)", side = "left"),
+        yaxis2 = list(title = "Profit Margin (%)", side = "right", overlaying = "y", range = c(0, max(summary_data$Profit_Margin) * 1.2)),
+        xaxis = list(title = ""),
+        barmode = "group",
+        legend = list(orientation = "h", xanchor = "center", x = 0.5, y = -0.2)
+      )
+  })
+  
+  # Top Performers Charts
+  output$top_transaction_types <- renderPlotly({
+    req(filtered_data$transactions)
+    
+    if(nrow(filtered_data$transactions) == 0) {
+      return(plot_ly() %>% add_annotations(text = "No transaction data available", showarrow = FALSE))
+    }
+    
+    top_types <- filtered_data$transactions %>%
+      group_by(Type) %>%
+      summarise(
+        Count = n(),
+        Total_Amount = sum(Total_Amount),
+        Total_Profit = sum(Profit),
+        Avg_Profit = mean(Profit)
+      ) %>%
+      arrange(desc(Total_Profit)) %>%
+      top_n(5, Total_Profit)
+    
+    plot_ly(top_types, x = ~reorder(Type, Total_Profit), y = ~Total_Profit, type = "bar",
+            marker = list(color = colorRampPalette(c("#007bff", "#28a745"))(nrow(top_types))),
+            text = ~paste("Count:", Count, "<br>Avg Profit: ₱", round(Avg_Profit, 2)),
+            hoverinfo = "text") %>%
+      layout(
+        xaxis = list(title = ""),
+        yaxis = list(title = "Total Profit (₱)"),
+        margin = list(b = 80)
+      )
+  })
+  
+  output$top_product_categories <- renderPlotly({
+    req(filtered_data$sales)
+    
+    if(nrow(filtered_data$sales) == 0) {
+      return(plot_ly() %>% add_annotations(text = "No sales data available", showarrow = FALSE))
+    }
+    
+    top_categories <- filtered_data$sales %>%
+      group_by(Product_Category) %>%
+      summarise(
+        Count = n(),
+        Items_Sold = sum(Quantity),
+        Total_Revenue = sum(Unit_Price * Quantity),
+        Total_Profit = sum(Profit),
+        Profit_Margin = (sum(Profit) / sum(Unit_Price * Quantity)) * 100
+      ) %>%
+      arrange(desc(Total_Profit)) %>%
+      top_n(5, Total_Profit)
+    
+    plot_ly(top_categories, x = ~reorder(Product_Category, Total_Profit), y = ~Total_Profit, type = "bar",
+            marker = list(color = colorRampPalette(c("#28a745", "#007bff"))(nrow(top_categories))),
+            text = ~paste("Items Sold:", Items_Sold, 
+                          "<br>Revenue: ₱", round(Total_Revenue, 2),
+                          "<br>Margin:", round(Profit_Margin, 1), "%"),
+            hoverinfo = "text") %>%
+      layout(
+        xaxis = list(title = "", tickangle = 45),
+        yaxis = list(title = "Total Profit (₱)"),
+        margin = list(b = 120)
+      )
+  })
+  
+  # Product Category Toggle
+  observeEvent(input$product_category, {
+    if(input$product_category == "J. Others") {
+      shinyjs::show("custom_category_container")
+    } else {
+      shinyjs::hide("custom_category_container")
+    }
+  })
+}
+
+# Run the application
+shinyApp(ui = ui, server = server)
