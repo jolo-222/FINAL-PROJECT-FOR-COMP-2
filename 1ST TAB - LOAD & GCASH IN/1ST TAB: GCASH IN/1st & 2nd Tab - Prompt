@@ -1,11 +1,6 @@
 
 #1st Tab: Load & Gcash in/out Tracker:
 
- 
-
-
-
-
 data_file <- "transactions.csv"
 
 if (!file.exists(data_file)) {
