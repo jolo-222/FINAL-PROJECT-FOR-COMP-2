@@ -1,0 +1,2434 @@
+library(shiny)
+library(DT)
+library(shinyjs)
+library(bslib)
+library(readxl)
+library(writexl)
+library(ggplot2)
+library(plotly)
+library(scales)
+library(dplyr)
+library(htmltools)
+library(shinyWidgets)
+library(shinythemes)
+
+# File paths
+data_file <- "transactions.csv"
+sales_file <- "sales_data.rds"
+product_file <- "C:/Users/Jhon lowell Daculan/Downloads/STORE_JAVIER.xlsx"
+excel_file <- "C:/Users/Jhon lowell Daculan/Downloads/STORE_JAVIER.xlsx"
+
+# Initialize transaction data file if not exists
+if (!file.exists(data_file)) {
+  write.csv(
+    data.frame(
+      Date = as.Date(character()),
+      CustomerName = character(),
+      MobileNumber = character(),
+      Type = character(),
+      Amount = numeric(),
+      Cost = numeric(),
+      Profit = numeric(),
+      stringsAsFactors = FALSE
+    ),
+    data_file,
+    row.names = FALSE
+  )
+}
+
+# Initialize sales data
+if (file.exists(sales_file)) {
+  sales_data_init <- readRDS(sales_file)
+} else {
+  # Initialize reactive sales data if no saved data exists
+  sales_data_init <- data.frame(
+    Date = as.Date(character()),
+    Category = character(),
+    Product = character(),
+    Quantity = numeric(),
+    Unit_Cost = numeric(),
+    Unit_Price = numeric(),
+    Profit = numeric(),
+    stringsAsFactors = FALSE
+  )
+  saveRDS(sales_data_init, sales_file)
+}
+
+# INSTRUCTIONS:
+# Ensure the Excel file 'STORE_JAVIER.xlsx' is in the working directory
+sheet_names <- tryCatch({
+  excel_sheets(excel_file)
+}, error = function(e) {
+  return(
+    c(
+      "A. Canned Goods",
+      "B. Noodles",
+      "C. Snacks / Biscuits",
+      "D. Drinks / Beverages",
+      "E. Condiments & Cooking Essentials",
+      "F. Hygiene Products",
+      "G. Cigarettes",
+      "H. Ice/Ice Candy",
+      "I. Household Items",
+      "J. Others"
+    )
+  )
+})
+
+product_data <- lapply(sheet_names, function(sheet) {
+  tryCatch({
+    read_excel(excel_file, sheet = sheet)
+  }, error = function(e) {
+    # Return dummy data if sheet can't be read
+    data.frame(
+      `Product Name` = c("Product1", "Product2"),
+      `Unit Cost (PHP)` = c(10, 15),
+      `Unit Price (PHP)` = c(15, 20),
+      stringsAsFactors = FALSE
+    )
+  })
+})
+names(product_data) <- sheet_names
+
+# Function to clean sheet names to category labels
+clean_category <- function(sheet_name) {
+  gsub("[.]", "", toupper(trimws(sheet_name)))
+}
+
+# Remove the LETTERS formatting completely
+categories <- setNames(sheet_names, sheet_names)
+
+# Create reactive values for undo/redo functionality
+history_stack <- reactiveValues(data = list())
+redo_stack <- reactiveValues(data = list())
+sales_history_stack <- reactiveValues(data = list())
+sales_redo_stack <- reactiveValues(data = list())
+
+# Brown theme colors
+theme_colors <- list(
+  dark = "#7B3F00",
+  # Dark brown
+  medium = "#A0522D",
+  # Medium brown
+  light = "#CD853F",
+  # Light brown
+  lighter = "#DEB887",
+  # Very light brown
+  off_white = "#FFF5EB",
+  # Light orange background
+  dark_orange = "#FF8C00" # Dark orange for borders
+)
+
+# Custom CSS for updated styling requirements in Sales tab
+custom_css <- HTML(
+  "
+  :root {
+    --brown-dark: #7B3F00;     /* Dark brown */
+    --brown-medium: #A0522D;   /* Medium brown */
+    --brown-light: #CD853F;    /* Light brown */
+    --brown-lighter: #DEB887;  /* Very light brown */
+    --off-white: #FFF5EB;      /* Light orange as background */
+    --dark-orange: #FF8C00;    /* Dark orange for borders */
+  }
+
+  body {
+    background-color: #FFF5EB; /* Base color as fallback */
+    animation: backgroundChange 6s steps(3) infinite;
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  }
+
+  @keyframes backgroundChange {
+    0% {
+      background-color: #FFF5EB; /* Very light orange */
+    }
+    33.33% {
+      background-color: #F0E0C6; /* Very light brown */
+    }
+    66.66% {
+      background-color: #F5E8D7; /* Light beige (blend) */
+    }
+    100% {
+      background-color: #FFF5EB; /* Back to very light orange */
+    }
+  }
+
+  .main-title {
+    color: var(--brown-dark);
+    font-weight: bold;
+    text-align: center;
+    margin-bottom: 30px;
+    font-size: 2.5rem;
+    letter-spacing: 1px;
+  }
+
+  .transaction-subtitle {
+    color: var(--brown-dark);
+    font-weight: bold;
+    text-align: center;
+    margin-bottom: 20px;
+    font-size: 1.7rem;
+  }
+
+  .card {
+    border-radius: 10px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);
+    margin-bottom: 20px;
+    background-color: white;
+    overflow: hidden;
+  }
+
+  .card-header {
+    background-color: var(--brown-dark);
+    color: white;
+    font-weight: bold;
+    padding: 12px 20px;
+    border: none;
+    text-transform: uppercase;
+  }
+
+  .card-body {
+    padding: 20px;
+  }
+
+  .sidebar-card {
+    background-color: white;
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+
+  .btn-primary {
+    background-color: white !important;
+    border-color: var(--brown-dark) !important;
+    color: var(--brown-dark) !important;
+    border-radius: 5px;
+    padding: 8px 16px;
+    transition: all 0.3s ease;
+    font-weight: bold !important;
+  }
+
+  .btn-primary:hover {
+    background-color: var(--brown-lighter) !important;
+    border-color: var(--brown-dark) !important;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+  }
+
+  .selectize-input {
+    background-color: white !important;
+    border: 2px solid var(--dark-orange) !important;
+    border-radius: 5px !important;
+    box-shadow: none !important;
+    transition: all 0.3s ease;
+  }
+
+  .selectize-input.focus {
+    border-color: var(--brown-dark) !important;
+    box-shadow: 0 0 0 0.2rem rgba(123, 63, 0, 0.25) !important;
+    transform: scale(1.02);
+  }
+
+  .selectize-dropdown {
+    background-color: white !important;
+    border: 2px solid var(--dark-orange) !important;
+    border-radius: 0 0 5px 5px !important;
+  }
+
+  .selectize-dropdown-content .option {
+    background-color: white !important;
+    color: var(--brown-dark) !important;
+    transition: all 0.2s ease;
+    border-bottom: 1px solid var(--brown-lighter);
+  }
+
+  .selectize-dropdown-content .option:hover,
+  .selectize-dropdown-content .option.active {
+    background-color: var(--brown-lighter) !important;
+  }
+
+  .form-control {
+    border: 2px solid var(--dark-orange);
+    border-radius: 5px;
+  }
+
+  .form-control:focus {
+    border-color: var(--brown-dark);
+    box-shadow: 0 0 0 0.2rem rgba(123, 63, 0, 0.25);
+  }
+
+  .dataTables_wrapper {
+    padding: 10px;
+    background-color: white;
+    border-radius: 10px;
+  }
+
+  /* Styling for data table headers */
+  table.dataTable thead th {
+    background-color: var(--brown-dark) !important;
+    color: white !important;
+    font-weight: bold !important;
+    border-bottom: 2px solid var(--brown-medium) !important;
+  }
+
+  /* Remove blue selection color in tables */
+  table.dataTable tbody tr.selected {
+    background-color: var(--brown-lighter) !important;
+  }
+
+  .dataTables_info, .dataTables_paginate {
+    margin-top: 10px !important;
+    color: var(--brown-dark) !important;
+  }
+
+  .paginate_button {
+    color: var(--brown-dark) !important;
+  }
+
+  .paginate_button.current {
+    background: var(--brown-light) !important;
+    border: 1px solid var(--brown-medium) !important;
+  }
+
+  .summary-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 20px;
+  }
+
+  .summary-table th {
+    background-color: var(--brown-dark);
+    color: white;
+    text-align: left;
+    padding: 10px;
+    font-weight: bold;
+  }
+
+  .summary-table td {
+    padding: 10px;
+    border-bottom: 1px solid var(--brown-lighter);
+  }
+
+  .total-profit {
+    font-size: 1.5rem;
+    font-weight: bold;
+    color: var(--brown-dark);
+    text-align: center;
+    margin-top: 20px;
+    padding: 15px;
+    background-color: white;
+    border-radius: 5px;
+    border: 2px solid var(--brown-dark);
+  }
+
+  .highest-sales {
+    font-size: 1.1rem;
+    color: var(--brown-dark);
+    text-align: center;
+    margin-top: 10px;
+    padding: 10px;
+    background-color: var(--brown-lighter);
+    border-radius: 5px;
+  }
+
+  .time-period-selector {
+    background-color: white;
+    border-radius: 5px;
+    padding: 10px;
+    margin-bottom: 15px;
+  }
+
+  .time-period-selector .btn {
+    background-color: white;
+    color: var(--brown-dark);
+    border: 1px solid var(--brown-medium);
+    font-weight: bold;
+
+  .time-period-selector .btn.active {
+    background-color: var(--brown-dark) !important;
+    color: white !important;
+    border-color: var(--brown-light) !important;
+  }
+
+  .nav-tabs .nav-link {
+    color: var(--brown-dark);
+    font-weight: bold;
+    border: 1px solid var(--brown-light);
+    margin-right: 5px;
+    border-bottom: none;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    padding: 10px 15px;
+    background-color: #f8f8f8;
+  }
+
+  .nav-tabs .nav-link.active {
+    color: white;
+    background-color: var(--brown-dark);
+    border-color: var(--brown-medium);
+  }
+
+  .undo-redo-btns {
+    margin-bottom: 15px;
+  }
+
+  .sales-entry-title {
+    color: var(--brown-dark);
+    font-weight: bold;
+    margin-bottom: 15px;
+    font-size: 1.3rem;
+  }
+
+  .modal-content {
+    border-radius: 10px;
+    border: none;
+  }
+
+  .modal-header {
+    background-color: var(--brown-dark);
+    color: white;
+    border-top-left-radius: 10px;
+    border-top-right-radius: 10px;
+    border-bottom: none;
+  }
+
+  .modal-body {
+    padding: 20px;
+  }
+
+  .modal-footer {
+    border-top: none;
+    padding: 15px 20px 20px;
+  }
+
+  .chart-container {
+    background-color: white;
+    border-radius: 10px;
+    padding: 15px;
+    margin-bottom: 20px;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.05);
+  }
+
+  .tab-pane {
+    padding-top: 20px;
+  }
+
+  hr {
+    border-color: var(--brown-lighter);
+    margin: 30px 0;
+  }
+
+  .helper-text {
+    color: var(--brown-medium);
+    font-style: italic;
+    font-size: 0.9rem;
+    margin-top: 5px;
+  }
+
+  /* Date range picker styling */
+  .daterangepicker {
+    border-radius: 10px;
+    border: 2px solid var(--brown-dark);
+    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+  }
+
+  .daterangepicker .calendar-table {
+    border-radius: 5px;
+  }
+
+  .daterangepicker td.active, .daterangepicker td.active:hover {
+    background-color: var(--brown-dark) !important;
+  }
+
+  .daterangepicker .btn-primary {
+    background-color: var(--brown-dark) !important;
+    border-color: var(--brown-medium) !important;
+    color: white !important;
+  }
+"
+)
+
+# Define UI
+ui <- navbarPage(
+  title = div(
+    img(
+      src = "https://cdn-icons-png.flaticon.com/512/3724/3724763.png",
+      height = "40px",
+      style = "margin-right: 10px;"
+    ),
+    "STORE JAVIER POS SYSTEM",
+    style = "display: flex; align-items: center; color: #7B3F00; font-weight: bold;"
+  ),
+  theme = bs_theme(version = 5, primary = "#CD853F"),
+  id = "navbar",
+  
+  # Sales Entry Tab
+  tabPanel(
+    "Sales Entry",
+    useShinyjs(),
+    tags$head(tags$style(custom_css)),
+    
+    fluidRow(h2("Sales Entry", class = "main-title")),
+    
+    fluidRow(
+      column(
+        width = 4,
+        card(
+          card_header("Product Selection"),
+          card_body(
+            selectInput("category", "Select Category:", choices = categories),
+            uiOutput("productUI"),
+            numericInput("quantity", "Quantity:", value = 1, min = 1),
+            actionButton(
+              "addToCart",
+              "Add to Cart",
+              class = "btn-primary",
+              icon = icon("plus")
+            ),
+            hr(),
+            fluidRow(column(
+              6,
+              actionButton(
+                "undoSales",
+                "Undo",
+                class = "btn-primary",
+                icon = icon("undo"),
+                width = "100%",
+                disabled = TRUE
+              )
+            ), column(
+              6,
+              actionButton(
+                "redoSales",
+                "Redo",
+                class = "btn-primary",
+                icon = icon("redo"),
+                width = "100%",
+                disabled = TRUE
+              )
+            ))
+          )
+        ),
+        
+        card(
+          card_header("Customer Information"),
+          card_body(
+            textInput("customerName", "Customer Name:", placeholder = "Optional"),
+            textInput("mobileNumber", "Mobile Number:", placeholder = "Optional"),
+            selectInput(
+              "transactionType",
+              "Transaction Type:",
+              choices = c("Store Visit", "Online Order", "Phone Order")
+            ),
+            actionButton(
+              "completeTransaction",
+              "Complete Transaction",
+              class = "btn-primary",
+              icon = icon("check-circle"),
+              style = "width: 100%; margin-top: 15px; background-color: #A0522D !important; color: white !important;"
+            )
+          )
+        )
+      ),
+      
+      column(width = 8, card(
+        card_header("Current Transaction"),
+        card_body(
+          DTOutput("cartTable"),
+          br(),
+          fluidRow(column(
+            width = 12,
+            div(
+              class = "total-display p-3 mb-3",
+              style = "background-color: white; border-radius: 10px; border: 2px solid #7B3F00; box-shadow: 0 2px 8px rgba(0,0,0,0.1);",
+              fluidRow(column(width = 6, div(
+                h4("Total Items:", style = "color: #7B3F00; margin-bottom: 5px; font-weight: bold;"),
+                h3(textOutput("totalItems"), style = "font-weight: bold; color: #CD853F;")
+              )), column(width = 6, div(
+                h4("Total Amount:", style = "color: #7B3F00; margin-bottom: 5px; font-weight: bold;"),
+                h3(textOutput("totalAmount"), style = "font-weight: bold; color: #CD853F;")
+              )))
+            )
+          )),
+          
+          fluidRow(
+            column(
+              width = 6,
+              actionButton(
+                "removeSelected",
+                "Remove Selected Items",
+                class = "btn-primary",
+                icon = icon("trash-alt"),
+                style = "width: 100%;"
+              )
+            ),
+            column(
+              width = 6,
+              actionButton(
+                "clearCart",
+                "Clear Cart",
+                class = "btn-primary",
+                icon = icon("times-circle"),
+                style = "width: 100%;"
+              )
+            )
+          )
+        )
+      ), # Transaction Success Card (will be shown/hidden with JS)
+      shinyjs::hidden(
+        div(
+          id = "transactionSuccess",
+          class = "alert",
+          style = "background-color: #DFF0D8; border-color: #D6E9C6; color: #3C763D; padding: 20px; border-radius: 5px; margin-top: 20px; display: flex; align-items: center;",
+          icon("check-circle", style = "font-size: 24px; margin-right: 15px;"),
+          div(
+            h4("Transaction Completed Successfully!", style = "margin-bottom: 5px; font-weight: bold;"),
+            p("The transaction has been recorded and saved to your data.")
+          )
+        )
+      ))
+    )
+  ),
+  
+  # Transactions Tab
+  tabPanel(
+    "Transactions",
+    useShinyjs(),
+    fluidRow(
+      h2("Transaction History", class = "main-title")
+    ),
+    
+    fluidRow(
+      column(
+        width = 3,
+        card(
+          card_header("Time Range Selection"),
+          card_body(
+            dateRangeInput("dateRange", "Date Range:",
+                           start = Sys.Date() - 30, end = Sys.Date()),
+            selectInput("filterType", "Transaction Type:", 
+                        choices = c("All", "Store Visit", "Online Order", "Phone Order")),
+            actionButton("filterTransactions", "Apply Filters", 
+                         class = "btn-primary", icon = icon("filter"), width = "100%"),
+            hr(),
+            fluidRow(
+              column(6, actionButton("undoTransactions", "Undo", class = "btn-primary", icon = icon("undo"), width = "100%", disabled = TRUE)),
+              column(6, actionButton("redoTransactions", "Redo", class = "btn-primary", icon = icon("redo"), width = "100%", disabled = TRUE))
+            ),
+            hr(),
+            downloadButton("downloadTransactions", "Export Data", class = "btn-primary", style = "width: 100%")
+          )
+        )
+      ),
+      
+      column(
+        width = 9,
+        card(
+          card_header("Transaction Records"),
+          card_body(
+            DTOutput("transactionsTable"),
+            br(),
+            fluidRow(
+              column(
+                width = 4,
+                card(
+                  card_header("Summary"),
+                  card_body(
+                    div(
+                      p(strong("Total Revenue:"), textOutput("totalRevenue", inline = TRUE), style = "font-size: 16px; margin-bottom: 10px;"),
+                      p(strong("Total Profit:"), textOutput("totalProfit", inline = TRUE), style = "font-size: 16px; margin-bottom: 10px;"),
+                      p(strong("Total Transactions:"), textOutput("totalTransactions", inline = TRUE), style = "font-size: 16px;")
+                    )
+                  )
+                )
+              ),
+              column(
+                width = 8,
+                card(
+                  card_header("Actions"),
+                  card_body(
+                    fluidRow(
+                      column(
+                        width = 6,
+                        actionButton("editTransaction", "Edit Selected", class = "btn-primary", icon = icon("edit"), width = "100%", disabled = TRUE)
+                      ),
+                      column(
+                        width = 6,
+                        actionButton("deleteTransaction", "Delete Selected", class = "btn-primary", icon = icon("trash-alt"), width = "100%", disabled = TRUE)
+                      )
+                    )
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  ),
+    
+    # Analytics Tab
+    tabPanel(
+      "Analytics",
+      useShinyjs(),
+      fluidRow(h2("Sales Analytics", class = "main-title")),
+      
+      fluidRow(
+        column(width = 3, card(
+          card_header("Filter Options"),
+          card_body(
+            dateRangeInput(
+              "analyticsDateRange",
+              "Date Range:",
+              start = Sys.Date() - 30,
+              end = Sys.Date()
+            ),
+            selectInput("groupByTime", "Group By:", choices = c("Day", "Week", "Month")),
+            selectInput(
+              "analyticsType",
+              "Transaction Type:",
+              choices = c("All", "Store Visit", "Online Order", "Phone Order")
+            ),
+            actionButton(
+              "updateAnalytics",
+              "Update Analytics",
+              class = "btn-primary",
+              icon = icon("sync"),
+              width = "100%"
+            )
+          )
+        )),
+        
+        column(
+          width = 9,
+          card(card_header("Sales Trend"), card_body(
+            plotlyOutput("salesTrendPlot", height = "300px")
+          )),
+          
+          fluidRow(column(width = 6, card(
+            card_header("Revenue by Transaction Type"),
+            card_body(plotlyOutput("revenueByTypePlot", height = "250px"))
+          )), column(width = 6, card(
+            card_header("Profit Margin Analysis"),
+            card_body(plotlyOutput("profitMarginPlot", height = "250px"))
+          ))),
+          
+          card(card_header("Key Metrics"), card_body(
+            fluidRow(
+              column(
+                width = 3,
+                div(
+                  class = "metric-card",
+                  style = "text-align: center; padding: 15px; background-color: #FFF5EB; border-radius: 10px; border: 2px solid #CD853F; height: 120px;",
+                  h4("Total Revenue", style = "color: #7B3F00; margin-bottom: 10px; font-size: 16px;"),
+                  h3(textOutput("analyticsTotalRevenue"), style = "color: #CD853F; font-weight: bold;")
+                )
+              ),
+              column(
+                width = 3,
+                div(
+                  class = "metric-card",
+                  style = "text-align: center; padding: 15px; background-color: #FFF5EB; border-radius: 10px; border: 2px solid #CD853F; height: 120px;",
+                  h4("Total Profit", style = "color: #7B3F00; margin-bottom: 10px; font-size: 16px;"),
+                  h3(textOutput("analyticsTotalProfit"), style = "color: #CD853F; font-weight: bold;")
+                )
+              ),
+              column(
+                width = 3,
+                div(
+                  class = "metric-card",
+                  style = "text-align: center; padding: 15px; background-color: #FFF5EB; border-radius: 10px; border: 2px solid #CD853F; height: 120px;",
+                  h4("Avg. Transaction", style = "color: #7B3F00; margin-bottom: 10px; font-size: 16px;"),
+                  h3(textOutput("analyticsAvgTransaction"), style = "color: #CD853F; font-weight: bold;")
+                )
+              ),
+              column(
+                width = 3,
+                div(
+                  class = "metric-card",
+                  style = "text-align: center; padding: 15px; background-color: #FFF5EB; border-radius: 10px; border: 2px solid #CD853F; height: 120px;",
+                  h4("Profit Margin", style = "color: #7B3F00; margin-bottom: 10px; font-size: 16px;"),
+                  h3(textOutput("analyticsProfitMargin"), style = "color: #CD853F; font-weight: bold;")
+                )
+              )
+            )
+          ))
+        )
+      )
+    ),
+    
+    # Reports Tab
+    tabPanel(
+      "Reports",
+      useShinyjs(),
+      fluidRow(
+        h2("Sales Reports", class = "main-title")
+      ),
+      
+      fluidRow(
+        column(
+          width = 3,
+          card(
+            card_header("Report Options"),
+            card_body(
+              selectInput("reportType", "Report Type:", 
+                          choices = c("Daily Sales", "Monthly Summary", "Product Performance", "Transaction Types")),
+              dateRangeInput("reportDateRange", "Date Range:", 
+                             start = Sys.Date() - 30, end = Sys.Date()),
+              actionButton("generateReport", "Generate Report", 
+                           class = "btn-primary", icon = icon("file-alt"), width = "100%"),
+              hr(),
+              downloadButton("downloadReport", "Download Report", class = "btn-primary", style = "width: 100%;")
+            )
+          )
+        ),
+        
+        column(
+          width = 9,
+          uiOutput("reportOutput")
+        )
+      )
+    )
+  )
+  
+  # Define server logic
+  server <- function(input, output, session) {
+    # Reactive values for cart, transactions, and sales data
+    cart <- reactiveVal(
+      data.frame(
+        Product = character(),
+        Category = character(),
+        Quantity = numeric(),
+        UnitPrice = numeric(),
+        UnitCost = numeric(),
+        TotalPrice = numeric(),
+        TotalCost = numeric(),
+        Profit = numeric(),
+        stringsAsFactors = FALSE
+      )
+    )
+    
+    # Load transaction data
+    transactions <- reactiveVal(read.csv(data_file, stringsAsFactors = FALSE))
+    
+    # Load sales data
+    sales_data <- reactiveVal(sales_data_init)
+    
+    # Initialize count of elements in history stack
+    history_count <- reactiveVal(0)
+    redo_count <- reactiveVal(0)
+    sales_history_count <- reactiveVal(0)
+    sales_redo_count <- reactiveVal(0)
+    
+    # Dynamic product selection based on category
+    output$productUI <- renderUI({
+      category <- input$category
+      products <- product_data[[category]]$`Product Name`
+      selectizeInput(
+        "product",
+        "Select Product:",
+        choices = products,
+        options = list(
+          placeholder = "Search for a product",
+          onInitialize = I('function() { this.setValue(""); }')
+        )
+      )
+    })
+    
+    # Add to cart button logic
+    observeEvent(input$addToCart, {
+      req(input$product, input$quantity)
+      
+      product_name <- input$product
+      category_name <- input$category
+      quantity <- input$quantity
+      
+      # Find the selected product in the product data
+      product_info <- product_data[[category_name]]
+      product_row <- which(product_info$`Product Name` == product_name)
+      
+      if (length(product_row) > 0) {
+        unit_price <- product_info$`Unit Price (PHP)`[product_row]
+        unit_cost <- product_info$`Unit Cost (PHP)`[product_row]
+        
+        # Add to history stack
+        current_cart <- cart()
+        history_stack$data[[length(history_stack$data) + 1]] <- current_cart
+        history_count(history_count() + 1)
+        redo_stack$data <- list() # Clear redo stack
+        redo_count(0)
+        
+        # Update button states
+        shinyjs::enable("undoSales")
+        shinyjs::disable("redoSales")
+        
+        # Check if product already in cart
+        existing_row <- which(current_cart$Product == product_name &
+                                current_cart$Category == category_name)
+        
+        if (length(existing_row) > 0) {
+          # Update existing product quantity
+          current_cart$Quantity[existing_row] <- current_cart$Quantity[existing_row] + quantity
+          current_cart$TotalPrice[existing_row] <- current_cart$Quantity[existing_row] * unit_price
+          current_cart$TotalCost[existing_row] <- current_cart$Quantity[existing_row] * unit_cost
+          current_cart$Profit[existing_row] <- current_cart$TotalPrice[existing_row] - current_cart$TotalCost[existing_row]
+        } else {
+          # Add new product to cart
+          new_row <- data.frame(
+            Product = product_name,
+            Category = category_name,
+            Quantity = quantity,
+            UnitPrice = unit_price,
+            UnitCost = unit_cost,
+            TotalPrice = quantity * unit_price,
+            TotalCost = quantity * unit_cost,
+            Profit = quantity * (unit_price - unit_cost),
+            stringsAsFactors = FALSE
+          )
+          current_cart <- rbind(current_cart, new_row)
+        }
+        
+        cart(current_cart)
+      }
+    })
+    
+    # Undo function for sales entry
+    observeEvent(input$undoSales, {
+      if (history_count() > 0) {
+        # Save current state for redo
+        redo_stack$data[[length(redo_stack$data) + 1]] <- cart()
+        redo_count(redo_count() + 1)
+        
+        # Restore previous state
+        cart(history_stack$data[[history_count()]])
+        history_stack$data[[history_count()]] <- NULL
+        history_count(history_count() - 1)
+        
+        # Update button states
+        shinyjs::enable("redoSales")
+        if (history_count() == 0) {
+          shinyjs::disable("undoSales")
+        }
+      }
+    })
+    
+    # Redo function for sales entry
+    observeEvent(input$redoSales, {
+      if (redo_count() > 0) {
+        # Save current state for undo
+        history_stack$data[[length(history_stack$data) + 1]] <- cart()
+        history_count(history_count() + 1)
+        
+        # Restore redo state
+        cart(redo_stack$data[[redo_count()]])
+        redo_stack$data[[redo_count()]] <- NULL
+        redo_count(redo_count() - 1)
+        
+        # Update button states
+        shinyjs::enable("undoSales")
+        if (redo_count() == 0) {
+          shinyjs::disable("redoSales")
+        }
+      }
+    })
+    
+    # Remove selected items from cart
+    observeEvent(input$removeSelected, {
+      selected_rows <- input$cartTable_rows_selected
+      if (length(selected_rows) > 0) {
+        # Save current state to history
+        current_cart <- cart()
+        history_stack$data[[length(history_stack$data) + 1]] <- current_cart
+        history_count(history_count() + 1)
+        redo_stack$data <- list() # Clear redo stack
+        redo_count(0)
+        
+        # Update button states
+        shinyjs::enable("undoSales")
+        shinyjs::disable("redoSales")
+        
+        # Remove selected rows
+        current_cart <- current_cart[-selected_rows, , drop = FALSE]
+        cart(current_cart)
+      }
+    })
+    
+    # Clear cart button logic
+    observeEvent(input$clearCart, {
+      # Save current state to history
+      current_cart <- cart()
+      if (nrow(current_cart) > 0) {
+        history_stack$data[[length(history_stack$data) + 1]] <- current_cart
+        history_count(history_count() + 1)
+        redo_stack$data <- list() # Clear redo stack
+        redo_count(0)
+        
+        # Update button states
+        shinyjs::enable("undoSales")
+        shinyjs::disable("redoSales")
+        
+        # Clear cart
+        cart(
+          data.frame(
+            Product = character(),
+            Category = character(),
+            Quantity = numeric(),
+            UnitPrice = numeric(),
+            UnitCost = numeric(),
+            TotalPrice = numeric(),
+            TotalCost = numeric(),
+            Profit = numeric(),
+            stringsAsFactors = FALSE
+          )
+        )
+      }
+    })
+    
+    # Complete transaction button logic
+    observeEvent(input$completeTransaction, {
+      current_cart <- cart()
+      if (nrow(current_cart) > 0) {
+        # Get customer info and transaction details
+        customer_name <- ifelse(input$customerName == "",
+                                "Walk-in Customer",
+                                input$customerName)
+        mobile_number <- ifelse(input$mobileNumber == "", "None", input$mobileNumber)
+        transaction_type <- input$transactionType
+        transaction_date <- Sys.Date()
+        
+        # Calculate transaction totals
+        total_amount <- sum(current_cart$TotalPrice)
+        total_cost <- sum(current_cart$TotalCost)
+        total_profit <- sum(current_cart$Profit)
+        
+        # Add to transactions
+        current_transactions <- transactions()
+        new_transaction <- data.frame(
+          Date = transaction_date,
+          CustomerName = customer_name,
+          MobileNumber = mobile_number,
+          Type = transaction_type,
+          Amount = total_amount,
+          Cost = total_cost,
+          Profit = total_profit,
+          stringsAsFactors = FALSE
+        )
+        
+        # Add to transaction history
+        updated_transactions <- rbind(current_transactions, new_transaction)
+        transactions(updated_transactions)
+        
+        # Save to file
+        write.csv(updated_transactions, data_file, row.names = FALSE)
+        
+        # Add individual product sales to sales data
+        current_sales <- sales_data()
+        for (i in 1:nrow(current_cart)) {
+          new_sale <- data.frame(
+            Date = transaction_date,
+            Category = current_cart$Category[i],
+            Product = current_cart$Product[i],
+            Quantity = current_cart$Quantity[i],
+            Unit_Cost = current_cart$UnitCost[i],
+            Unit_Price = current_cart$UnitPrice[i],
+            Profit = current_cart$Profit[i],
+            stringsAsFactors = FALSE
+          )
+          current_sales <- rbind(current_sales, new_sale)
+        }
+        sales_data(current_sales)
+        
+        # Save sales data to file
+        saveRDS(current_sales, sales_file)
+        
+        # Clear cart
+        cart(
+          data.frame(
+            Product = character(),
+            Category = character(),
+            Quantity = numeric(),
+            UnitPrice = numeric(),
+            UnitCost = numeric(),
+            TotalPrice = numeric(),
+            TotalCost = numeric(),
+            Profit = numeric(),
+            stringsAsFactors = FALSE
+          )
+        )
+        
+        # Clear form fields
+        updateTextInput(session, "customerName", value = "")
+        updateTextInput(session, "mobileNumber", value = "")
+        
+        # Show success message
+        shinyjs::show("transactionSuccess")
+        shinyjs::delay(3000, shinyjs::hide("transactionSuccess"))
+      }
+    })
+    
+    # Render cart table
+    output$cartTable <- renderDT({
+      current_cart <- cart()
+      
+      if (nrow(current_cart) == 0) {
+        return(datatable(
+          data.frame(
+            Product = character(0),
+            Category = character(0),
+            Quantity = numeric(0),
+            "Unit Price" = numeric(0),
+            "Total Price" = numeric(0)
+          ),
+          options = list(
+            pageLength = 5,
+            lengthMenu = c(5, 10, 15),
+            searching = FALSE
+          ),
+          selection = "multiple",
+          rownames = FALSE
+        ))
+      }
+      
+      # Format display table
+      display_cart <- data.frame(
+        Product = current_cart$Product,
+        Category = current_cart$Category,
+        Quantity = current_cart$Quantity,
+        "Unit Price" = current_cart$UnitPrice,
+        "Total Price" = current_cart$TotalPrice,
+        stringsAsFactors = FALSE
+      )
+      
+      datatable(
+        display_cart,
+        options = list(
+          pageLength = 5,
+          lengthMenu = c(5, 10, 15),
+          searching = FALSE
+        ),
+        selection = "multiple",
+        rownames = FALSE
+      ) %>%
+        formatCurrency(c("Unit Price", "Total Price"),
+                       currency = "₱ ",
+                       digits = 2)
+    })
+    
+    # Calculate and display total items
+    output$totalItems <- renderText({
+      current_cart <- cart()
+      sum(current_cart$Quantity)
+    })
+    
+    # Calculate and display total amount
+    output$totalAmount <- renderText({
+      current_cart <- cart()
+      paste0("₱ ", format(
+        sum(current_cart$TotalPrice),
+        big.mark = ",",
+        nsmall = 2
+      ))
+    })
+    
+    # Filter transactions based on date range and type
+    filteredTransactions <- reactive({
+      req(input$dateRange)
+      current_transactions <- transactions()
+      
+      if (nrow(current_transactions) == 0) {
+        return(current_transactions)
+      }
+      
+      # Convert date column to Date type if it's character
+      if (is.character(current_transactions$Date)) {
+        current_transactions$Date <- as.Date(current_transactions$Date)
+      }
+      
+      # Filter by date range
+      date_filtered <- current_transactions[current_transactions$Date >= input$dateRange[1] &
+                                              current_transactions$Date <= input$dateRange[2], ]
+      
+      # Filter by transaction type if not "All"
+      if (input$filterType != "All") {
+        date_filtered <- date_filtered[date_filtered$Type == input$filterType, ]
+      }
+      
+      return(date_filtered)
+    })
+    
+    # Apply transaction filters
+    observeEvent(input$filterTransactions, {
+      # No additional action needed as filteredTransactions is reactive
+    })
+    
+    # Render transactions table
+    output$transactionsTable <- renderDT({
+      filtered <- filteredTransactions()
+      
+      if (nrow(filtered) == 0) {
+        return(datatable(
+          data.frame(
+            Date = as.Date(character(0)),
+            CustomerName = character(0),
+            MobileNumber = character(0),
+            Type = character(0),
+            Amount = numeric(0),
+            Profit = numeric(0)
+          ),
+          options = list(
+            pageLength = 10,
+            lengthMenu = c(10, 25, 50)
+          ),
+          selection = "single",
+          rownames = FALSE
+        ))
+      }
+      
+      # Format display table
+      display_transactions <- data.frame(
+        Date = filtered$Date,
+        "Customer Name" = filtered$CustomerName,
+        "Mobile Number" = filtered$MobileNumber,
+        "Transaction Type" = filtered$Type,
+        Amount = filtered$Amount,
+        Profit = filtered$Profit,
+        stringsAsFactors = FALSE
+      )
+      
+      datatable(
+        display_transactions,
+        options = list(
+          pageLength = 10,
+          lengthMenu = c(10, 25, 50),
+          order = list(list(0, 'desc'))
+        ),
+        selection = "single",
+        rownames = FALSE
+      ) %>%
+        formatCurrency(c("Amount", "Profit"),
+                       currency = "₱ ",
+                       digits = 2) %>%
+        formatDate("Date", method = "toLocaleDateString")
+    })
+    
+    # Enable/disable transaction action buttons based on selection
+    observe({
+      selected <- input$transactionsTable_rows_selected
+      if (length(selected) > 0) {
+        shinyjs::enable("editTransaction")
+        shinyjs::enable("deleteTransaction")
+      } else {
+        shinyjs::disable("editTransaction")
+        shinyjs::disable("deleteTransaction")
+      }
+    })
+    
+    # Edit transaction - Show modal dialog
+    observeEvent(input$editTransaction, {
+      selected_row <- input$transactionsTable_rows_selected
+      if (length(selected_row) > 0) {
+        filtered <- filteredTransactions()
+        selected_transaction <- filtered[selected_row, ]
+        
+        showModal(modalDialog(
+          title = "Edit Transaction",
+          size = "l",
+          fluidRow(
+            column(
+              width = 6,
+              dateInput("editDate", "Date:", value = selected_transaction$Date),
+              textInput(
+                "editCustomerName",
+                "Customer Name:",
+                value = selected_transaction$CustomerName
+              ),
+              textInput(
+                "editMobileNumber",
+                "Mobile Number:",
+                value = selected_transaction$MobileNumber
+              )
+            ),
+            column(
+              width = 6,
+              selectInput(
+                "editType",
+                "Transaction Type:",
+                choices = c("Store Visit", "Online Order", "Phone Order"),
+                selected = selected_transaction$Type
+              ),
+              numericInput("editAmount", "Amount:", value = selected_transaction$Amount),
+              numericInput("editCost", "Cost:", value = selected_transaction$Cost)
+            )
+          ),
+          footer = tagList(
+            actionButton("saveEdit", "Save Changes", class = "btn-primary"),
+            actionButton("cancelEdit", "Cancel", class = "btn-primary")
+          )
+        ))
+      }
+    })
+    
+    # Cancel edit transaction
+    observeEvent(input$cancelEdit, {
+      removeModal()
+    })
+    
+    # Delete transaction - show confirmation modal
+    observeEvent(input$deleteTransaction, {
+      selected_row <- input$transactionsTable_rows_selected
+      if (length(selected_row) > 0) {
+        showModal(modalDialog(
+          title = "Confirm Deletion",
+          size = "s",
+          p(
+            "Are you sure you want to delete the selected transaction? This cannot be undone."
+          ),
+          footer = tagList(
+            actionButton(
+              "confirmDelete",
+              "Yes, Delete",
+              class = "btn-primary",
+              style = "width: 100%;"
+            ),
+            actionButton(
+              "cancelDelete",
+              "Cancel",
+              class = "btn-primary",
+              style = "width: 100%;"
+            )
+          )
+        ))
+      }
+    })
+    
+    # Cancel delete transaction
+    observeEvent(input$cancelDelete, {
+      removeModal()
+    })
+    
+    # This is not needed as we have a replacement implementation below
+    
+    # Confirm delete transaction
+    observeEvent(input$confirmDelete, {
+      selected_row <- input$transactionsTable_rows_selected
+      if (length(selected_row) > 0) {
+        # Get the original row
+        filtered <- filteredTransactions()
+        original_transaction <- filtered[selected_row, ]
+        
+        # Find this transaction in the full dataset
+        current_transactions <- transactions()
+        if (is.character(current_transactions$Date)) {
+          current_transactions$Date <- as.Date(current_transactions$Date)
+        }
+        
+        # Locate the exact transaction based on multiple criteria for reliability
+        match_idx <- which(
+          current_transactions$Date == original_transaction$Date &
+            current_transactions$CustomerName == original_transaction$CustomerName &
+            current_transactions$MobileNumber == original_transaction$MobileNumber &
+            current_transactions$Amount == original_transaction$Amount
+        )
+        
+        if (length(match_idx) > 0) {
+          # Save current state to history stack
+          history_stack$data[[length(history_stack$data) + 1]] <- current_transactions
+          history_count(history_count() + 1)
+          redo_stack$data <- list() # Clear redo stack
+          redo_count(0)
+          
+          # Enable undo button
+          shinyjs::enable("undoTransactions")
+          shinyjs::disable("redoTransactions")
+          
+          # Remove the transaction
+          current_transactions <- current_transactions[-match_idx, , drop = FALSE]
+          
+          # Update transactions reactive value and save to file
+          transactions(current_transactions)
+          write.csv(current_transactions, data_file, row.names = FALSE)
+          
+          removeModal()
+        }
+      }
+    })
+    
+    # Cancel delete transaction
+    observeEvent(input$cancelDelete, {
+      removeModal()
+    })
+    
+    # Undo transactions operations
+    observeEvent(input$undoTransactions, {
+      if (history_count() > 0) {
+        # Save current state for redo
+        redo_stack$data[[length(redo_stack$data) + 1]] <- transactions()
+        redo_count(redo_count() + 1)
+        
+        # Restore previous state
+        transactions(history_stack$data[[history_count()]])
+        history_stack$data[[history_count()]] <- NULL
+        history_count(history_count() - 1)
+        
+        # Save to file
+        write.csv(transactions(), data_file, row.names = FALSE)
+        
+        # Update button states
+        shinyjs::enable("redoTransactions")
+        if (history_count() == 0) {
+          shinyjs::disable("undoTransactions")
+        }
+      }
+    })
+    
+    # Redo transactions operations
+    observeEvent(input$redoTransactions, {
+      if (redo_count() > 0) {
+        # Save current state for undo
+        history_stack$data[[length(history_stack$data) + 1]] <- transactions()
+        history_count(history_count() + 1)
+        
+        # Restore redo state
+        transactions(redo_stack$data[[redo_count()]])
+        redo_stack$data[[redo_count()]] <- NULL
+        redo_count(redo_count() - 1)
+        
+        # Save to file
+        write.csv(transactions(), data_file, row.names = FALSE)
+        
+        # Update button states
+        shinyjs::enable("undoTransactions")
+        if (redo_count() == 0) {
+          shinyjs::disable("redoTransactions")
+        }
+      }
+    })
+    
+    # Calculate and display transaction summary metrics
+    output$totalRevenue <- renderText({
+      filtered <- filteredTransactions()
+      paste0("₱ ", format(
+        sum(filtered$Amount),
+        big.mark = ",",
+        nsmall = 2
+      ))
+    })
+    
+    output$totalProfit <- renderText({
+      filtered <- filteredTransactions()
+      paste0("₱ ", format(
+        sum(filtered$Profit),
+        big.mark = ",",
+        nsmall = 2
+      ))
+    })
+    
+    output$totalTransactions <- renderText({
+      filtered <- filteredTransactions()
+      nrow(filtered)
+    })
+    
+    # Download transactions data
+    output$downloadTransactions <- downloadHandler(
+      filename = function() {
+        paste("transactions-", Sys.Date(), ".xlsx", sep = "")
+      },
+      content = function(file) {
+        filtered <- filteredTransactions()
+        write_xlsx(filtered, file)
+      }
+    )
+    
+    # Analytics reactive data
+    filteredAnalyticsData <- reactive({
+      req(input$analyticsDateRange)
+      current_transactions <- transactions()
+      
+      if (nrow(current_transactions) == 0) {
+        return(current_transactions)
+      }
+      
+      # Convert date column to Date type if it's character
+      if (is.character(current_transactions$Date)) {
+        current_transactions$Date <- as.Date(current_transactions$Date)
+      }
+      
+      # Filter by date range
+      date_filtered <- current_transactions[current_transactions$Date >= input$analyticsDateRange[1] &
+                                              current_transactions$Date <= input$analyticsDateRange[2], ]
+      
+      # Filter by transaction type if not "All"
+      if (input$analyticsType != "All") {
+        date_filtered <- date_filtered[date_filtered$Type == input$analyticsType, ]
+      }
+      
+      return(date_filtered)
+    })
+    
+    # Group data by time period for analytics
+    groupedAnalyticsData <- reactive({
+      filtered <- filteredAnalyticsData()
+      
+      if (nrow(filtered) == 0) {
+        return(data.frame(
+          TimePeriod = character(),
+          Revenue = numeric(),
+          Profit = numeric()
+        ))
+      }
+      
+      # Create time period column based on selected grouping
+      if (input$groupByTime == "Day") {
+        filtered$TimePeriod <- as.Date(filtered$Date)
+      } else if (input$groupByTime == "Week") {
+        filtered$TimePeriod <- format(filtered$Date, "%Y-W%V")
+      } else if (input$groupByTime == "Month") {
+        filtered$TimePeriod <- format(filtered$Date, "%Y-%m")
+      }
+      
+      # Group by time period and summarize
+      aggregated <- aggregate(cbind(Amount, Profit) ~ TimePeriod,
+                              data = filtered,
+                              FUN = sum)
+      
+      # Rename columns
+      names(aggregated) <- c("TimePeriod", "Revenue", "Profit")
+      
+      return(aggregated)
+    })
+    
+    # Update analytics plots when button is clicked
+    observeEvent(input$updateAnalytics, {
+      # The reactive data will be recalculated automatically
+    })
+    
+    # Render sales trend plot
+    output$salesTrendPlot <- renderPlotly({
+      grouped <- groupedAnalyticsData()
+      
+      if (nrow(grouped) == 0) {
+        return(NULL)
+      }
+      
+      plot_ly() %>%
+        add_trace(
+          data = grouped,
+          x = ~ TimePeriod,
+          y = ~ Revenue,
+          type = 'scatter',
+          mode = 'lines+markers',
+          name = 'Revenue',
+          line = list(color = '#7B3F00', width = 3),
+          marker = list(color = '#7B3F00', size = 8)
+        ) %>%
+        add_trace(
+          data = grouped,
+          x = ~ TimePeriod,
+          y = ~ Profit,
+          type = 'scatter',
+          mode = 'lines+markers',
+          name = 'Profit',
+          line = list(color = '#CD853F', width = 3),
+          marker = list(color = '#CD853F', size = 8)
+        ) %>%
+        layout(
+          title = "Revenue and Profit Trends",
+          xaxis = list(title = "Time Period", tickangle = 45),
+          yaxis = list(title = "Amount (₱)", tickformat = "₱,"),
+          legend = list(x = 0.1, y = 0.9),
+          hovermode = "x unified",
+          margin = list(b = 100),
+          plot_bgcolor = 'rgba(0,0,0,0)',
+          paper_bgcolor = 'rgba(0,0,0,0)'
+        )
+    })
+    
+    # Render revenue by transaction type plot
+    output$revenueByTypePlot <- renderPlotly({
+      filtered <- filteredAnalyticsData()
+      
+      if (nrow(filtered) == 0) {
+        return(NULL)
+      }
+      
+      # Calculate profit margin percentage by day
+      if (is.character(filtered$Date)) {
+        filtered$Date <- as.Date(filtered$Date)
+      }
+      
+      filtered$ProfitMargin <- (filtered$Profit / filtered$Amount) * 100
+      daily_margins <- aggregate(ProfitMargin ~ Date, data = filtered, FUN = mean)
+      
+      plot_ly(
+        data = daily_margins,
+        x = ~ Date,
+        y = ~ ProfitMargin,
+        type = 'bar',
+        marker = list(
+          color = '#CD853F',
+          line = list(color = '#7B3F00', width = 1)
+        )
+      ) %>%
+        layout(
+          title = "Daily Profit Margin %",
+          xaxis = list(title = "Date", tickangle = 45),
+          yaxis = list(title = "Profit Margin %", ticksuffix = "%"),
+          hovermode = "x unified",
+          margin = list(b = 100),
+          plot_bgcolor = 'rgba(0,0,0,0)',
+          paper_bgcolor = 'rgba(0,0,0,0)'
+        )
+    })
+    
+    # Analytics summary metrics
+    output$analyticsTotalRevenue <- renderText({
+      filtered <- filteredAnalyticsData()
+      paste0("₱ ", format(
+        sum(filtered$Amount),
+        big.mark = ",",
+        nsmall = 2
+      ))
+    })
+    
+    output$analyticsTotalProfit <- renderText({
+      filtered <- filteredAnalyticsData()
+      paste0("₱ ", format(
+        sum(filtered$Profit),
+        big.mark = ",",
+        nsmall = 2
+      ))
+    })
+    
+    output$analyticsAvgTransaction <- renderText({
+      filtered <- filteredAnalyticsData()
+      if (nrow(filtered) == 0) {
+        return("₱ 0.00")
+      }
+      avg <- mean(filtered$Amount)
+      paste0("₱ ", format(avg, big.mark = ",", nsmall = 2))
+    })
+    
+    output$analyticsProfitMargin <- renderText({
+      filtered <- filteredAnalyticsData()
+      if (nrow(filtered) == 0 || sum(filtered$Amount) == 0) {
+        return("0.00%")
+      }
+      margin <- (sum(filtered$Profit) / sum(filtered$Amount)) * 100
+      paste0(format(margin, nsmall = 2), "%")
+    })
+    
+    # Generate reports
+    reportData <- reactive({
+      req(input$reportDateRange)
+      current_transactions <- transactions()
+      
+      if (nrow(current_transactions) == 0) {
+        return(NULL)
+      }
+      
+      # Convert date column to Date type if it's character
+      if (is.character(current_transactions$Date)) {
+        current_transactions$Date <- as.Date(current_transactions$Date)
+      }
+      
+      # Filter by date range
+      date_filtered <- current_transactions[current_transactions$Date >= input$reportDateRange[1] &
+                                              current_transactions$Date <= input$reportDateRange[2], ]
+      
+      return(date_filtered)
+    })
+    
+    # Render report output based on selected report type
+    output$reportOutput <- renderUI({
+      req(input$generateReport)
+      
+      report_data <- reportData()
+      if (is.null(report_data) || nrow(report_data) == 0) {
+        return(div(
+          style = "text-align: center; margin-top: 50px;",
+          icon("exclamation-triangle", style = "font-size: 48px; color: #CD853F;"),
+          h3("No data available for the selected date range.", style = "color: #7B3F00;"),
+          p(
+            "Please select a different date range or check your transaction data."
+          )
+        ))
+      }
+      
+      if (input$reportType == "Daily Sales") {
+        # Daily sales report
+        daily_sales <- aggregate(cbind(Amount, Profit) ~ Date,
+                                 data = report_data,
+                                 FUN = sum)
+        
+        tagList(card(
+          card_header("Daily Sales Report"),
+          card_body(
+            h4(paste(
+              "Report Period:",
+              format(input$reportDateRange[1], "%b %d, %Y"),
+              "to",
+              format(input$reportDateRange[2], "%b %d, %Y")
+            )),
+            hr(),
+            plotlyOutput("dailySalesPlot", height = "300px"),
+            hr(),
+            DTOutput("dailySalesTable")
+          )
+        ))
+      } else if (input$reportType == "Monthly Summary") {
+        # Monthly summary report
+        report_data$Month <- format(report_data$Date, "%Y-%m")
+        monthly_summary <- aggregate(cbind(Amount, Profit) ~ Month,
+                                     data = report_data,
+                                     FUN = sum)
+        
+        # Add transaction count
+        transaction_counts <- aggregate(Amount ~ Month, data = report_data, FUN = length)
+        names(transaction_counts)[2] <- "Count"
+        
+        monthly_summary <- merge(monthly_summary, transaction_counts, by = "Month")
+        monthly_summary$AvgTransaction <- monthly_summary$Amount / monthly_summary$Count
+        monthly_summary$ProfitMargin <- (monthly_summary$Profit / monthly_summary$Amount) * 100
+        
+        tagList(card(
+          card_header("Monthly Summary Report"),
+          card_body(
+            h4(paste(
+              "Report Period:",
+              format(input$reportDateRange[1], "%b %d, %Y"),
+              "to",
+              format(input$reportDateRange[2], "%b %d, %Y")
+            )),
+            hr(),
+            plotlyOutput("monthlySummaryPlot", height = "300px"),
+            hr(),
+            DTOutput("monthlySummaryTable")
+          )
+        ))
+      } else if (input$reportType == "Product Performance") {
+        # Product performance report using sales_data
+        current_sales <- sales_data()
+        
+        if (is.null(current_sales) || nrow(current_sales) == 0) {
+          return(div(
+            style = "text-align: center; margin-top: 50px;",
+            icon("exclamation-triangle", style = "font-size: 48px; color: #CD853F;"),
+            h3("No product data available.", style = "color: #7B3F00;"),
+            p("Please check your sales data.")
+          ))
+        }
+        
+        # Convert date column to Date type if it's character
+        if (is.character(current_sales$Date)) {
+          current_sales$Date <- as.Date(current_sales$Date)
+        }
+        
+        # Filter by date range
+        filtered_sales <- current_sales[current_sales$Date >= input$reportDateRange[1] &
+                                          current_sales$Date <= input$reportDateRange[2], ]
+        
+        if (nrow(filtered_sales) == 0) {
+          return(div(
+            style = "text-align: center; margin-top: 50px;",
+            icon("exclamation-triangle", style = "font-size: 48px; color: #CD853F;"),
+            h3(
+              "No product data available for the selected date range.",
+              style = "color: #7B3F00;"
+            ),
+            p(
+              "Please select a different date range or check your sales data."
+            )
+          ))
+        }
+        
+        # Aggregate by product
+        product_performance <- aggregate(
+          cbind(Quantity, Unit_Price * Quantity, Profit) ~ Product + Category,
+          data = filtered_sales,
+          FUN = sum
+        )
+        names(product_performance) <- c("Product",
+                                        "Category",
+                                        "TotalQuantity",
+                                        "TotalRevenue",
+                                        "TotalProfit")
+        product_performance$ProfitMargin <- (product_performance$TotalProfit / product_performance$TotalRevenue) * 100
+        
+        tagList(card(
+          card_header("Product Performance Report"),
+          card_body(
+            h4(paste(
+              "Report Period:",
+              format(input$reportDateRange[1], "%b %d, %Y"),
+              "to",
+              format(input$reportDateRange[2], "%b %d, %Y")
+            )),
+            hr(),
+            plotlyOutput("productPerformancePlot", height = "300px"),
+            hr(),
+            DTOutput("productPerformanceTable")
+          )
+        ))
+      } else if (input$reportType == "Transaction Types") {
+        # Transaction types report
+        transaction_types <- aggregate(cbind(Amount, Profit) ~ Type,
+                                       data = report_data,
+                                       FUN = sum)
+        transaction_types$ProfitMargin <- (transaction_types$Profit / transaction_types$Amount) * 100
+        
+        # Add transaction count
+        type_counts <- aggregate(Amount ~ Type, data = report_data, FUN = length)
+        names(type_counts)[2] <- "Count"
+        
+        transaction_types <- merge(transaction_types, type_counts, by = "Type")
+        transaction_types$AvgTransaction <- transaction_types$Amount / transaction_types$Count
+        
+        tagList(card(
+          card_header("Transaction Types Report"),
+          card_body(
+            h4(paste(
+              "Report Period:",
+              format(input$reportDateRange[1], "%b %d, %Y"),
+              "to",
+              format(input$reportDateRange[2], "%b %d, %Y")
+            )),
+            hr(),
+            plotlyOutput("transactionTypesPlot", height = "300px"),
+            hr(),
+            DTOutput("transactionTypesTable")
+          )
+        ))
+      }
+    })
+    
+    # Render report-specific outputs
+    
+    # Daily sales report plots and tables
+    output$dailySalesPlot <- renderPlotly({
+      req(input$reportType == "Daily Sales", input$generateReport)
+      
+      report_data <- reportData()
+      if (is.null(report_data) || nrow(report_data) == 0) {
+        return(NULL)
+      }
+      
+      daily_sales <- aggregate(cbind(Amount, Profit) ~ Date,
+                               data = report_data,
+                               FUN = sum)
+      
+      plot_ly() %>%
+        add_trace(
+          data = daily_sales,
+          x = ~ Date,
+          y = ~ Amount,
+          type = 'scatter',
+          mode = 'lines+markers',
+          name = 'Revenue',
+          line = list(color = '#7B3F00', width = 3),
+          marker = list(color = '#7B3F00', size = 8)
+        ) %>%
+        add_trace(
+          data = daily_sales,
+          x = ~ Date,
+          y = ~ Profit,
+          type = 'scatter',
+          mode = 'lines+markers',
+          name = 'Profit',
+          line = list(color = '#CD853F', width = 3),
+          marker = list(color = '#CD853F', size = 8)
+        ) %>%
+        layout(
+          title = "Daily Revenue and Profit",
+          xaxis = list(title = "Date", tickangle = 45),
+          yaxis = list(title = "Amount (₱)", tickformat = "₱,"),
+          legend = list(x = 0.1, y = 0.9),
+          hovermode = "x unified",
+          margin = list(b = 100),
+          plot_bgcolor = 'rgba(0,0,0,0)',
+          paper_bgcolor = 'rgba(0,0,0,0)'
+        )
+    })
+    
+    output$dailySalesTable <- renderDT({
+      req(input$reportType == "Daily Sales", input$generateReport)
+      
+      report_data <- reportData()
+      if (is.null(report_data) || nrow(report_data) == 0) {
+        return(NULL)
+      }
+      
+      daily_sales <- aggregate(cbind(Amount, Profit) ~ Date,
+                               data = report_data,
+                               FUN = sum)
+      
+      # Calculate profit margin
+      daily_sales$ProfitMargin <- (daily_sales$Profit / daily_sales$Amount) * 100
+      
+      # Format date
+      daily_sales$Date <- format(daily_sales$Date, "%Y-%m-%d")
+      
+      # Rename columns for display
+      names(daily_sales) <- c("Date", "Revenue (₱)", "Profit (₱)", "Profit Margin (%)")
+      
+      datatable(
+        daily_sales,
+        rownames = FALSE,
+        options = list(
+          pageLength = 10,
+          dom = 'Bfrtip',
+          buttons = c('copy', 'csv', 'excel', 'pdf'),
+          searching = FALSE
+        )
+      ) %>%
+        formatCurrency(c("Revenue (₱)", "Profit (₱)"), "₱") %>%
+        formatRound("Profit Margin (%)", 2)
+    })
+    
+    # Monthly summary report plots and tables
+    output$monthlySummaryPlot <- renderPlotly({
+      req(input$reportType == "Monthly Summary",
+          input$generateReport)
+      
+      report_data <- reportData()
+      if (is.null(report_data) || nrow(report_data) == 0) {
+        return(NULL)
+      }
+      
+      report_data$Month <- format(report_data$Date, "%Y-%m")
+      monthly_summary <- aggregate(cbind(Amount, Profit) ~ Month,
+                                   data = report_data,
+                                   FUN = sum)
+      
+      plot_ly() %>%
+        add_bars(
+          data = monthly_summary,
+          x = ~ Month,
+          y = ~ Amount,
+          name = 'Revenue',
+          marker = list(color = '#7B3F00')
+        ) %>%
+        add_bars(
+          data = monthly_summary,
+          x = ~ Month,
+          y = ~ Profit,
+          name = 'Profit',
+          marker = list(color = '#CD853F')
+        ) %>%
+        layout(
+          title = "Monthly Revenue and Profit",
+          xaxis = list(title = "Month", tickangle = 45),
+          yaxis = list(title = "Amount (₱)", tickformat = "₱,"),
+          barmode = 'group',
+          legend = list(x = 0.1, y = 0.9),
+          margin = list(b = 100),
+          plot_bgcolor = 'rgba(0,0,0,0)',
+          paper_bgcolor = 'rgba(0,0,0,0)'
+        )
+    })
+    
+    output$monthlySummaryTable <- renderDT({
+      req(input$reportType == "Monthly Summary",
+          input$generateReport)
+      
+      report_data <- reportData()
+      if (is.null(report_data) || nrow(report_data) == 0) {
+        return(NULL)
+      }
+      
+      report_data$Month <- format(report_data$Date, "%Y-%m")
+      monthly_summary <- aggregate(cbind(Amount, Profit) ~ Month,
+                                   data = report_data,
+                                   FUN = sum)
+      
+      # Add transaction count
+      transaction_counts <- aggregate(Amount ~ Month, data = report_data, FUN = length)
+      names(transaction_counts)[2] <- "Count"
+      
+      monthly_summary <- merge(monthly_summary, transaction_counts, by = "Month")
+      monthly_summary$AvgTransaction <- monthly_summary$Amount / monthly_summary$Count
+      monthly_summary$ProfitMargin <- (monthly_summary$Profit / monthly_summary$Amount) * 100
+      
+      # Rename columns for display
+      names(monthly_summary) <- c(
+        "Month",
+        "Revenue (₱)",
+        "Profit (₱)",
+        "Transactions",
+        "Avg Transaction (₱)",
+        "Profit Margin (%)"
+      )
+      
+      datatable(
+        monthly_summary,
+        rownames = FALSE,
+        options = list(
+          pageLength = 10,
+          dom = 'Bfrtip',
+          buttons = c('copy', 'csv', 'excel', 'pdf'),
+          searching = FALSE
+        )
+      ) %>%
+        formatCurrency(c("Revenue (₱)", "Profit (₱)", "Avg Transaction (₱)"), "₱") %>%
+        formatRound("Profit Margin (%)", 2)
+    })
+    
+    # Product performance report plots and tables
+    output$productPerformancePlot <- renderPlotly({
+      req(input$reportType == "Product Performance",
+          input$generateReport)
+      
+      current_sales <- sales_data()
+      
+      if (is.null(current_sales) || nrow(current_sales) == 0) {
+        return(NULL)
+      }
+      
+      # Convert date column to Date type if it's character
+      if (is.character(current_sales$Date)) {
+        current_sales$Date <- as.Date(current_sales$Date)
+      }
+      
+      # Filter by date range
+      filtered_sales <- current_sales[current_sales$Date >= input$reportDateRange[1] &
+                                        current_sales$Date <= input$reportDateRange[2], ]
+      
+      if (nrow(filtered_sales) == 0) {
+        return(NULL)
+      }
+      
+      # Aggregate by category
+      category_performance <- aggregate(cbind(Unit_Price * Quantity, Profit) ~ Category,
+                                        data = filtered_sales,
+                                        FUN = sum)
+      names(category_performance)[2:3] <- c("Revenue", "Profit")
+      
+      # Sort by Revenue descending
+      category_performance <- category_performance[order(-category_performance$Revenue), ]
+      
+      plot_ly() %>%
+        add_bars(
+          data = category_performance,
+          x = ~ Category,
+          y = ~ Revenue,
+          name = 'Revenue',
+          marker = list(color = '#7B3F00')
+        ) %>%
+        add_bars(
+          data = category_performance,
+          x = ~ Category,
+          y = ~ Profit,
+          name = 'Profit',
+          marker = list(color = '#CD853F')
+        ) %>%
+        layout(
+          title = "Category Performance",
+          xaxis = list(title = "Category", tickangle = 45),
+          yaxis = list(title = "Amount (₱)", tickformat = "₱,"),
+          barmode = 'group',
+          legend = list(x = 0.1, y = 0.9),
+          margin = list(b = 100),
+          plot_bgcolor = 'rgba(0,0,0,0)',
+          paper_bgcolor = 'rgba(0,0,0,0)'
+        )
+    })
+    
+    output$productPerformanceTable <- renderDT({
+      req(input$reportType == "Product Performance",
+          input$generateReport)
+      
+      current_sales <- sales_data()
+      
+      if (is.null(current_sales) || nrow(current_sales) == 0) {
+        return(NULL)
+      }
+      
+      # Convert date column to Date type if it's character
+      if (is.character(current_sales$Date)) {
+        current_sales$Date <- as.Date(current_sales$Date)
+      }
+      
+      # Filter by date range
+      filtered_sales <- current_sales[current_sales$Date >= input$reportDateRange[1] &
+                                        current_sales$Date <= input$reportDateRange[2], ]
+      
+      if (nrow(filtered_sales) == 0) {
+        return(NULL)
+      }
+      
+      # Aggregate by product
+      product_performance <- aggregate(
+        cbind(Quantity, Unit_Price * Quantity, Profit) ~ Product + Category,
+        data = filtered_sales,
+        FUN = sum
+      )
+      names(product_performance) <- c("Product",
+                                      "Category",
+                                      "Total Quantity",
+                                      "Revenue (₱)",
+                                      "Profit (₱)")
+      
+      # Calculate profit margin
+      product_performance$`Profit Margin (%)` <- (product_performance$`Profit (₱)` / product_performance$`Revenue (₱)`) * 100
+      
+      # Sort by Revenue descending
+      product_performance <- product_performance[order(-product_performance$`Revenue (₱)`), ]
+      
+      datatable(
+        product_performance,
+        rownames = FALSE,
+        options = list(
+          pageLength = 10,
+          dom = 'Bfrtip',
+          buttons = c('copy', 'csv', 'excel', 'pdf'),
+          searching = TRUE
+        )
+      ) %>%
+        formatCurrency(c("Revenue (₱)", "Profit (₱)"), "₱") %>%
+        formatRound("Profit Margin (%)", 2)
+    })
+    
+    # Transaction types report plots and tables
+    output$transactionTypesPlot <- renderPlotly({
+      req(input$reportType == "Transaction Types",
+          input$generateReport)
+      
+      report_data <- reportData()
+      if (is.null(report_data) || nrow(report_data) == 0) {
+        return(NULL)
+      }
+      
+      transaction_types <- aggregate(cbind(Amount, Profit) ~ Type,
+                                     data = report_data,
+                                     FUN = sum)
+      
+      plot_ly(
+        data = transaction_types,
+        labels = ~ Type,
+        values = ~ Amount,
+        type = 'pie',
+        marker = list(
+          colors = c('#7B3F00', '#A0522D', '#CD853F'),
+          line = list(color = '#FFFFFF', width = 1)
+        ),
+        textinfo = 'label+percent',
+        hoverinfo = 'text',
+        text = ~ paste('₱', format(
+          Amount, big.mark = ",", nsmall = 2
+        ))
+      ) %>%
+        layout(
+          title = "Revenue by Transaction Type",
+          showlegend = TRUE,
+          margin = list(
+            l = 20,
+            r = 20,
+            b = 50,
+            t = 50
+          ),
+          plot_bgcolor = 'rgba(0,0,0,0)',
+          paper_bgcolor = 'rgba(0,0,0,0)'
+        )
+    })
+    
+    output$transactionTypesTable <- renderDT({
+      req(input$reportType == "Transaction Types",
+          input$generateReport)
+      
+      report_data <- reportData()
+      if (is.null(report_data) || nrow(report_data) == 0) {
+        return(NULL)
+      }
+      
+      transaction_types <- aggregate(cbind(Amount, Profit) ~ Type,
+                                     data = report_data,
+                                     FUN = sum)
+      transaction_types$ProfitMargin <- (transaction_types$Profit / transaction_types$Amount) * 100
+      
+      # Add transaction counts
+      type_counts <- aggregate(Amount ~ Type, data = report_data, FUN = length)
+      names(type_counts)[2] <- "Count"
+      
+      transaction_types <- merge(transaction_types, type_counts, by = "Type")
+      
+      # Rename columns for display
+      names(transaction_types) <- c(
+        "Transaction Type",
+        "Revenue (₱)",
+        "Profit (₱)",
+        "Profit Margin (%)",
+        "Transactions"
+      )
+      
+      datatable(
+        transaction_types,
+        rownames = FALSE,
+        options = list(
+          pageLength = 10,
+          dom = 'Bfrtip',
+          buttons = c('copy', 'csv', 'excel', 'pdf'),
+          searching = FALSE
+        )
+      ) %>%
+        formatCurrency(c("Revenue (₱)", "Profit (₱)"), "₱") %>%
+        formatRound("Profit Margin (%)", 2)
+    })
+    
+    # Download report data
+    output$downloadReport <- downloadHandler(
+      filename = function() {
+        paste('cafe-report-', Sys.Date(), '.xlsx', sep = '')
+      },
+      content = function(file) {
+        req(input$reportType, input$generateReport)
+        
+        report_data <- reportData()
+        if (is.null(report_data) || nrow(report_data) == 0) {
+          return(NULL)
+        }
+        
+        current_sales <- sales_data()
+        
+        report_sheets <- list()
+        
+        # Transaction data
+        report_sheets[["Transactions"]] <- report_data
+        
+        # Product data if available
+        if (!is.null(current_sales) && nrow(current_sales) > 0) {
+          filtered_sales <- current_sales[current_sales$Date >= input$reportDateRange[1] &
+                                            current_sales$Date <= input$reportDateRange[2], ]
+          
+          if (nrow(filtered_sales) > 0) {
+            report_sheets[["Product Sales"]] <- filtered_sales
+          }
+        }
+        
+        # Write to Excel
+        write_xlsx(report_sheets, file)
+      }
+    )
+    
+    # Theme selection
+    observeEvent(input$themeSelector, {
+      new_theme <- switch(
+        input$themeSelector,
+        "Light" = bs_theme(
+          version = 5,
+          bg = "#FFF5EB",
+          fg = "#7B3F00",
+          primary = "#CD853F",
+          secondary = "#DEB887",
+          success = "#228B22",
+          base_font = font_google("Poppins")
+        ),
+        "Dark" = bs_theme(
+          version = 5,
+          bg = "#2A1B0A",
+          fg = "#E6CCAB",
+          primary = "#CD853F",
+          secondary = "#DEB887",
+          success = "#00CD00",
+          base_font = font_google("Poppins")
+        ),
+        "Coffee" = bs_theme(
+          version = 5,
+          bg = "#4A2C2A",
+          fg = "#FFF5EB",
+          primary = "#8B4513",
+          secondary = "#DEB887",
+          success = "#2E8B57",
+          base_font = font_google("Poppins")
+        )
+      )
+      session$setCurrentTheme(new_theme)
+    })
+    
+    # Modal for editing transactions
+    observeEvent(input$editTransaction, {
+      req(input$transactionsTable_rows_selected)
+      
+      row_index <- input$transactionsTable_rows_selected
+      transaction_data <- transactions_filtered()[row_index, ]
+      
+      showModal(
+        modalDialog(
+          title = "Edit Transaction",
+          textInput("editCustomerName", "Customer Name:", value = transaction_data$CustomerName),
+          textInput("editMobileNumber", "Mobile Number:", value = transaction_data$MobileNumber),
+          selectInput(
+            "editTransactionType",
+            "Transaction Type:",
+            choices = c("Store Visit", "Online Order", "Phone Order"),
+            selected = transaction_data$Type
+          ),
+          numericInput("editAmount", "Amount:", value = transaction_data$Amount),
+          numericInput("editCost", "Cost:", value = transaction_data$Cost),
+          
+          footer = tagList(
+            modalButton("Cancel"),
+            actionButton("saveEdit", "Save Changes", class = "btn-success")
+          ),
+          
+          size = "m"
+        )
+      )
+    })
+    
+    # Save edited transaction
+    observeEvent(input$saveEdit, {
+      req(input$transactionsTable_rows_selected)
+      
+      row_index <- input$transactionsTable_rows_selected
+      current_transactions <- transactions()
+      
+      # Add current state to history
+      history_stack$data[[length(history_stack$data) + 1]] <- current_transactions
+      redo_stack$data <- list()
+      
+      # Update with edited values
+      current_transactions[row_index, "CustomerName"] <- input$editCustomerName
+      current_transactions[row_index, "MobileNumber"] <- input$editMobileNumber
+      current_transactions[row_index, "Type"] <- input$editTransactionType
+      current_transactions[row_index, "Amount"] <- input$editAmount
+      current_transactions[row_index, "Cost"] <- input$editCost
+      current_transactions[row_index, "Profit"] <- input$editAmount - input$editCost
+      
+      # Save and update
+      write.csv(current_transactions, data_file, row.names = FALSE)
+      transactions_data(current_transactions)
+      
+      # Enable undo
+      shinyjs::enable("undoTransactions")
+      shinyjs::disable("redoTransactions")
+      
+      removeModal()
+      showNotification("Transaction updated successfully!", type = "message")
+    })
+    
+    # Modal for confirming transaction deletion
+    observeEvent(input$deleteTransaction, {
+      req(input$transactionsTable_rows_selected)
+      
+      showModal(
+        modalDialog(
+          title = "Confirm Deletion",
+          "Are you sure you want to delete this transaction? This action cannot be undone.",
+          footer = tagList(
+            modalButton("Cancel"),
+            actionButton("confirmDelete", "Delete", class = "btn-danger")
+          ),
+          easyClose = TRUE
+        )
+      )
+    })
+    
+    # Confirm and execute transaction deletion
+    observeEvent(input$confirmDelete, {
+      req(input$transactionsTable_rows_selected)
+      
+      row_index <- input$transactionsTable_rows_selected
+      current_transactions <- transactions()
+      
+      # Add current state to history
+      history_stack$data[[length(history_stack$data) + 1]] <- current_transactions
+      redo_stack$data <- list()
+      
+      # Remove the row
+      current_transactions <- current_transactions[-row_index, ]
+      
+      # Save and update
+      write.csv(current_transactions, data_file, row.names = FALSE)
+      transactions_data(current_transactions)
+      
+      # Enable undo
+      shinyjs::enable("undoTransactions")
+      shinyjs::disable("redoTransactions")
+      
+      removeModal()
+      showNotification("Transaction deleted successfully!", type = "message")
+    })
+    
+    # Handle undo/redo for transactions page
+    observeEvent(input$undoTransactions, {
+      req(length(history_stack$data) > 0)
+      
+      # Get the last state from history
+      last_state <- history_stack$data[[length(history_stack$data)]]
+      
+      # Add current state to redo stack
+      redo_stack$data[[length(redo_stack$data) + 1]] <- transactions()
+      
+      # Restore last state
+      write.csv(last_state, data_file, row.names = FALSE)
+      transactions_data(last_state)
+      
+      # Remove last state from history
+      history_stack$data <- history_stack$data[-length(history_stack$data)]
+      
+      # Update button states
+      if (length(history_stack$data) == 0) {
+        shinyjs::disable("undoTransactions")
+      }
+      shinyjs::enable("redoTransactions")
+    })
+    
+    observeEvent(input$redoTransactions, {
+      req(length(redo_stack$data) > 0)
+      
+      # Get the last state from redo stack
+      redo_state <- redo_stack$data[[length(redo_stack$data)]]
+      
+      # Add current state to history
+      history_stack$data[[length(history_stack$data) + 1]] <- transactions()
+      
+      # Restore redo state
+      write.csv(redo_state, data_file, row.names = FALSE)
+      transactions_data(redo_state)
+      
+      # Remove from redo stack
+      redo_stack$data <- redo_stack$data[-length(redo_stack$data)]
+      
+      # Update button states
+      shinyjs::enable("undoTransactions")
+      if (length(redo_stack$data) == 0) {
+        shinyjs::disable("redoTransactions")
+      }
+    })
+    
+    # About modal dialog
+    observeEvent(input$aboutBtn, {
+      showModal(
+        modalDialog(
+          title = "About Café Management System",
+          
+          div(
+            style = "text-align: center;",
+            h3("☕ Café Management System v1.0"),
+            p(
+              "A comprehensive solution for small to medium café businesses."
+            ),
+            p("Developed with Shiny for R.")
+          ),
+          
+          h4("Features"),
+          tags$ul(
+            tags$li("Sales Entry and Transaction Management"),
+            tags$li("Transaction History and Reporting"),
+            tags$li("Analytics and Business Intelligence"),
+            tags$li("Data Export and Backup")
+          ),
+          
+          footer = modalButton("Close"),
+          easyClose = TRUE,
+          size = "m"
+        )
+      )
+    })
+    
+    # Observe session end to perform cleanup
+    session$onSessionEnded(function() {
+      # Any cleanup can go here
+    })
+  }
+  
+  # Run the app
+  shinyApp(ui, server)
