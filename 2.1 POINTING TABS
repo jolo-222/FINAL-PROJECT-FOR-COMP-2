@@ -1,0 +1,1716 @@
+# Load necessary libraries
+library(shiny)
+library(readxl)
+library(writexl)
+library(DT)
+library(ggplot2)
+library(shinyjs)
+library(dplyr)
+library(plotly)
+library(bslib)
+library(htmltools)
+library(shinyWidgets)
+library(shinythemes)
+library(lubridate)
+library(scales)
+
+# File paths for data persistence
+transactions_file <- "transactions.csv"
+sales_data_path <- "sales_data.rds"
+excel_file <- "STORE_JAVIER.xlsx" # Changed to relative path for portability
+settings_file <- "app_settings.rds"
+
+# Initialize transactions data
+if (!file.exists(transactions_file)) {
+  write.csv(data.frame(
+    Date = as.Date(character()),
+    Customer_Name = character(),
+    Mobile_Number = character(),
+    Type = character(),
+    Total_Amount = numeric(),
+    Profit = numeric(),
+    stringsAsFactors = FALSE
+  ), transactions_file, row.names = FALSE)
+}
+
+# Try to load sales data
+if (file.exists(sales_data_path)) {
+  sales_data <- readRDS(sales_data_path)
+} else {
+  # Initialize reactive sales data if no saved data exists
+  sales_data <- data.frame(
+    Date = as.Date(character()),
+    Category = character(),
+    Product = character(),
+    Quantity = numeric(),
+    Unit_Cost = numeric(),
+    Unit_Price = numeric(),
+    Profit = numeric(),
+    stringsAsFactors = FALSE
+  )
+}
+
+# Try to load settings
+if (file.exists(settings_file)) {
+  app_settings <- readRDS(settings_file)
+} else {
+  # Default settings
+  app_settings <- list(
+    theme = "orange_brown", # orange_brown, blue_navy, green_forest
+    store_name = "Javier's Store",
+    owner_name = "Javier",
+    contact_number = "",
+    address = "",
+    table_pageLength = 10,
+    default_tab = "transactions"
+  )
+}
+
+# Try to load product data from Excel
+tryCatch({
+  if (file.exists(excel_file)) {
+    sheet_names <- excel_sheets(excel_file)
+    product_data <- lapply(sheet_names, function(sheet) read_excel(excel_file, sheet = sheet))
+    names(product_data) <- sheet_names
+    
+    # Clean sheet names to category labels
+    categories <- setNames(sheet_names, sheet_names)
+  } else {
+    # Default empty categories if file doesn't exist
+    product_data <- list()
+    categories <- c()
+    warning("Excel file not found. Please place STORE_JAVIER.xlsx in the app directory.")
+  }
+}, error = function(e) {
+  product_data <- list()
+  categories <- c()
+  warning(paste("Error loading Excel file:", e$message))
+})
+
+# UI function that builds theme-based CSS
+getCustomCSS <- function(theme = "orange_brown") {
+  if (theme == "blue_navy") {
+    return(HTML("
+      :root {
+        --primary-dark: #1A2A52;     
+        --primary-medium: #304878;   
+        --primary-light: #4A6FA5;    
+        --primary-lighter: #C5D5E5;  
+        --off-white: #F7FAFF;      
+        --accent: #2C88D9;      
+      }
+    "))
+  } else if (theme == "green_forest") {
+    return(HTML("
+      :root {
+        --primary-dark: #1E5631;     
+        --primary-medium: #2E8A57;   
+        --primary-light: #4FB286;    
+        --primary-lighter: #C5E8D5;  
+        --off-white: #F5FFF7;      
+        --accent: #45BF55;      
+      }
+    "))
+  } else { # Default orange_brown theme
+    return(HTML("
+      :root {
+        --primary-dark: #7B3F00;     
+        --primary-medium: #A0522D;   
+        --primary-light: #CD853F;    
+        --primary-lighter: #DEB887;  
+        --off-white: #FFF5EB;      
+        --accent: #FF8C00;      
+      }
+    "))
+  }
+}
+
+# Common CSS for all themes
+commonCSS <- HTML("
+  body {
+    background-color: var(--off-white);
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  }
+  
+  .main-title {
+    color: var(--primary-dark);
+    font-weight: bold;
+    text-align: center;
+    margin-bottom: 30px;
+    font-size: 2.5rem;
+    letter-spacing: 1px;
+  }
+  
+  .card {
+    border-radius: 10px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);
+    margin-bottom: 20px;
+    background-color: white;
+    overflow: hidden;
+  }
+  
+  .card-header {
+    background-color: var(--primary-dark);
+    color: white;
+    font-weight: bold;
+    padding: 12px 20px;
+    border: none;
+    text-transform: uppercase;
+  }
+  
+  .card-body {
+    padding: 20px;
+  }
+  
+  .sidebar-card {
+    background-color: white;
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  
+  .btn-primary {
+    background-color: white !important;
+    border-color: var(--primary-dark) !important;
+    color: var(--primary-dark) !important;
+    border-radius: 5px;
+    padding: 8px 16px;
+    transition: all 0.3s ease;
+    font-weight: bold !important;
+  }
+  
+  .btn-primary:hover {
+    background-color: var(--primary-lighter) !important;
+    border-color: var(--primary-dark) !important;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+  }
+  
+  .btn-warning, .btn-danger, .btn-dark {
+    border-radius: 5px;
+    padding: 8px 16px;
+    transition: all 0.3s ease;
+    font-weight: bold !important;
+  }
+  
+  .btn-warning:hover, .btn-danger:hover, .btn-dark:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+  }
+  
+  .selectize-input {
+    background-color: white !important;
+    border: 2px solid var(--accent) !important;
+    border-radius: 5px !important;
+    box-shadow: none !important;
+    transition: all 0.3s ease;
+  }
+  
+  .selectize-input.focus {
+    border-color: var(--primary-dark) !important;
+    box-shadow: 0 0 0 0.2rem rgba(123, 63, 0, 0.25) !important;
+    transform: scale(1.02);
+  }
+  
+  .selectize-dropdown {
+    background-color: white !important;
+    border: 2px solid var(--accent) !important;
+    border-radius: 0 0 5px 5px !important;
+  }
+  
+  .selectize-dropdown-content .option {
+    background-color: white !important;
+    color: var(--primary-dark) !important;
+    transition: all 0.2s ease;
+    border-bottom: 1px solid var(--primary-lighter);
+  }
+  
+  .selectize-dropdown-content .option:hover,
+  .selectize-dropdown-content .option.active {
+    background-color: var(--primary-lighter) !important;
+  }
+  
+  .form-control {
+    border: 2px solid var(--accent);
+    border-radius: 5px;
+  }
+  
+  .form-control:focus {
+    border-color: var(--primary-dark);
+    box-shadow: 0 0 0 0.2rem rgba(123, 63, 0, 0.25);
+  }
+  
+  .dataTables_wrapper {
+    padding: 10px;
+    background-color: white;
+    border-radius: 10px;
+  }
+  
+  /* Styling for data table headers */
+  table.dataTable thead th {
+    background-color: var(--primary-dark) !important;
+    color: white !important;
+    font-weight: bold !important;
+    border-bottom: 2px solid var(--primary-medium) !important;
+  }
+  
+  /* Remove blue selection color in tables */
+  table.dataTable tbody tr.selected {
+    background-color: var(--primary-lighter) !important;
+  }
+  
+  .dataTables_info, .dataTables_paginate {
+    margin-top: 10px !important;
+    color: var(--primary-dark) !important;
+  }
+  
+  .paginate_button {
+    color: var(--primary-dark) !important;
+  }
+  
+  .paginate_button.current {
+    background: var(--primary-light) !important;
+    border: 1px solid var(--primary-medium) !important;
+  }
+  
+  .summary-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 20px;
+  }
+  
+  .summary-table th {
+    background-color: var(--primary-dark);
+    color: white;
+    text-align: left;
+    padding: 10px;
+    font-weight: bold;
+  }
+  
+  .summary-table td {
+    padding: 10px;
+    border-bottom: 1px solid var(--primary-lighter);
+  }
+  
+  .total-profit {
+    font-size: 1.5rem;
+    font-weight: bold;
+    color: var(--primary-dark);
+    text-align: center;
+    margin-top: 20px;
+    padding: 15px;
+    background-color: white;
+    border-radius: 5px;
+    border: 2px solid var(--primary-dark);
+  }
+  
+  .highest-sales {
+    font-size: 1.1rem;
+    color: var(--primary-dark);
+    text-align: center;
+    margin-top: 10px;
+    padding: 10px;
+    background-color: var(--primary-lighter);
+    border-radius: 5px;
+  }
+  
+  .time-period-selector {
+    background-color: white;
+    border-radius: 5px;
+    padding: 10px;
+    margin-bottom: 15px;
+  }
+  
+  .time-period-selector .btn {
+    background-color: white;
+    color: var(--primary-dark);
+    border: 1px solid var(--primary-medium);
+    font-weight: bold;
+  }
+  
+    .time-period-selector .btn.active {
+    background-color: var(--primary-dark);
+    color: white;
+  }
+  
+  /* Owner credit */
+  .owner-credit {
+    text-align: center;
+    color: var(--primary-dark);
+    font-weight: bold;
+    margin-top: 20px;
+    padding: 10px;
+    font-size: 1.2rem;
+  }
+  
+  /* New styling for the tab navigation */
+  .nav-tabs {
+    border-bottom: 2px solid var(--primary-dark);
+    margin-bottom: 20px;
+  }
+  
+  .nav-tabs .nav-link {
+    color: var(--primary-dark);
+    font-weight: bold;
+    border: 1px solid transparent;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    margin-right: 5px;
+    padding: 12px 20px;
+    transition: all 0.3s ease;
+  }
+  
+  .nav-tabs .nav-link:hover {
+    border-color: var(--primary-lighter) var(--primary-lighter) transparent;
+    background-color: var(--primary-lighter);
+  }
+  
+  .nav-tabs .nav-link.active {
+    color: white;
+    background-color: var(--primary-dark);
+    border-color: var(--primary-dark);
+    border-bottom: 2px solid var(--primary-dark);
+  }
+  
+  /* Settings section styling */
+  .settings-section {
+    background-color: white;
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  
+  .settings-title {
+    color: var(--primary-dark);
+    border-bottom: 2px solid var(--primary-medium);
+    padding-bottom: 10px;
+    margin-bottom: 15px;
+  }
+  
+  .theme-option {
+    cursor: pointer;
+    transition: all 0.3s ease;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 3px solid transparent;
+  }
+  
+  .theme-option.active {
+    transform: scale(1.05);
+    border: 3px solid var(--primary-dark);
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+  }
+  
+  .theme-preview {
+    height: 120px;
+    display: flex;
+    flex-direction: column;
+  }
+  
+  .theme-header {
+    height: 30px;
+    display: flex;
+    align-items: center;
+    padding: 0 10px;
+    color: white;
+    font-weight: bold;
+  }
+  
+  .theme-body {
+    flex-grow: 1;
+    padding: 10px;
+  }
+  
+  .theme-name {
+    text-align: center;
+    padding: 5px;
+    font-weight: bold;
+    color: var(--primary-dark);
+  }
+")
+
+# Create UI
+ui <- fluidPage(
+  useShinyjs(),
+  tags$head(
+    tags$style(id = "theme-css", getCustomCSS(app_settings$theme)),
+    tags$style(commonCSS)
+  ),
+  
+  # App header
+  div(class = "main-title", 
+      textOutput("storeNameDisplay"),
+      p(style = "font-size: 16px; font-weight: normal; margin-top: -10px;", 
+        "Complete Store Management System")
+  ),
+  
+  # Main tabset panel
+  tabsetPanel(
+    id = "mainTabs",
+    
+    # Tab 1: Load & GCash Transactions
+    tabPanel(
+      "📱 Load & GCash", 
+      value = "transactions",
+      br(),
+      
+      sidebarLayout(
+        sidebarPanel(
+          div(class = "sidebar-card",
+              h4(class = "settings-title", "Transaction Entry"),
+              textInput("customer_name", "Customer Name:"),
+              textInput("mobile", "Mobile Number:"),
+              selectInput("type", "Transaction Type:",
+                          choices = c("Load", "GCash-In", "GCash-Out")),
+              numericInput("totalamount", "Total Amount(₱):", value = 0),
+              actionButton("submit", "Save Transaction", class = "btn btn-primary"),
+              br(), br(),
+              actionButton("deleterow", "Delete Row", class = "btn btn-warning"),
+              actionButton("undoBtn", "Undo", class = "btn btn-dark"),
+              actionButton("redoBtn", "Redo", class = "btn btn-dark"),
+              br(), br(),
+              downloadButton("downloadData", "Download Transactions", class = "btn btn-primary")
+          )
+        ),
+        
+        mainPanel(
+          div(class = "card",
+              div(class = "card-header", "Transaction Records"),
+              div(class = "card-body",
+                  DTOutput("data_table"),
+                  br(),
+                  actionButton("clearhistory", "Clear History", class = "btn btn-danger")
+              )
+          )
+        )
+      )
+    ),
+    
+    # Tab 2: Product Sales
+    tabPanel(
+      "🛒 Store Sales", 
+      value = "sales",
+      br(),
+      
+      sidebarLayout(
+        sidebarPanel(
+          div(class = "sidebar-card",
+              h4(class = "settings-title", "Add New Sale"),
+              
+              # Product selection inputs
+              selectInput("category", "Category:", choices = c("", categories)),
+              uiOutput("product_select"),
+              uiOutput("others_input"),
+              
+              # Quantity and pricing
+              numericInput("quantity", "Quantity:", value = 1, min = 1),
+              uiOutput("unit_cost_input"),
+              uiOutput("unit_price_input"),
+              
+              # Submit button and actions
+              actionButton("add_sale", "Add Sale", class = "btn btn-primary"),
+              actionButton("update_sale", "Update Sale", class = "btn btn-warning"),
+              hr(),
+              actionButton("deleteSale", "Delete Selected", class = "btn btn-danger"),
+              downloadButton("downloadSales", "Download Sales", class = "btn btn-primary")
+          )
+        ),
+        
+        mainPanel(
+          # Top analytics cards
+          fluidRow(
+            column(4,
+                   div(class = "card",
+                       div(class = "card-header", "Today's Profit"),
+                       div(class = "card-body", textOutput("daily_profit"))
+                   )
+            ),
+            column(4,
+                   div(class = "card",
+                       div(class = "card-header", "This Week's Profit"),
+                       div(class = "card-body", textOutput("weekly_profit"))
+                   )
+            ),
+            column(4,
+                   div(class = "card",
+                       div(class = "card-header", "This Month's Profit"),
+                       div(class = "card-body", textOutput("monthly_profit"))
+                   )
+            )
+          ),
+          
+          # Sales table
+          div(class = "card",
+              div(class = "card-header", "Sales Records"),
+              div(class = "card-body",
+                  div(style = "display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;",
+                      div(style = "display: flex; align-items: center;",
+                          selectInput("period_sales", "Time Period:", 
+                                      choices = c("All Time", "Today", "This Week", "This Month"),
+                                      selected = "All Time", width = "150px"),
+                          div(style = "margin-left: 10px;", dateRangeInput("date_range", "Custom Date Range:", width = "300px"))
+                      ),
+                      actionButton("clear_sales", "Clear All Sales", class = "btn btn-danger")
+                  ),
+                  DTOutput("sales_table")
+              )
+          )
+        )
+      )
+    ),
+    
+    # Tab 3: Statistical Visualization
+    tabPanel(
+      "📊 Analytics",
+      value = "analytics",
+      br(),
+      
+      fluidRow(
+        column(3,
+               div(class = "sidebar-card",
+                   h4(class = "settings-title", "Analytics Controls"),
+                   radioButtons("analytics_time", "Time Period:", 
+                                c("Daily" = "daily", 
+                                  "Weekly" = "weekly", 
+                                  "Monthly" = "monthly")),
+                   hr(),
+                   dateRangeInput("analytics_date_range", "Date Range:"),
+                   hr(),
+                   checkboxGroupInput("data_sources", "Data Sources:",
+                                      c("Store Sales" = "sales",
+                                        "Load & GCash" = "transactions"),
+                                      selected = c("sales", "transactions"))
+               )
+        ),
+        
+        column(9,
+               # Total profit card
+               div(class = "card",
+                   div(class = "card-header", "Total Profit Overview"),
+                   div(class = "card-body",
+                       fluidRow(
+                         column(4, div(class = "total-profit", textOutput("total_combined_profit"))),
+                         column(8, plotlyOutput("profit_pie_chart", height = "200px"))
+                       )
+                   )
+               ),
+               
+               # Profit trend chart
+               div(class = "card",
+                   div(class = "card-header", "Profit Trends"),
+                   div(class = "card-body",
+                       plotlyOutput("profit_trend_chart", height = "300px")
+                   )
+               ),
+               
+               # Top performers
+               fluidRow(
+                 column(6,
+                        div(class = "card",
+                            div(class = "card-header", "Top Products"),
+                            div(class = "card-body",
+                                plotlyOutput("top_products_chart", height = "300px")
+                            )
+                        )
+                 ),
+                 column(6,
+                        div(class = "card",
+                            div(class = "card-header", "Transaction Volume"),
+                            div(class = "card-body",
+                                plotlyOutput("transaction_volume_chart", height = "300px")
+                            )
+                        )
+                 )
+               )
+        )
+      )
+    ),
+    
+    # Tab 4: Settings
+    tabPanel(
+      "⚙️ Settings", 
+      value = "settings",
+      br(),
+      
+      fluidRow(
+        column(12,
+               div(class = "settings-section",
+                   h3(class = "settings-title", "Theme Settings"),
+                   p("Choose a color theme for your store management system:"),
+                   
+                   fluidRow(
+                     column(4,
+                            div(id = "theme_orange_brown", class = paste0("theme-option ", ifelse(app_settings$theme == "orange_brown", "active", "")),
+                                div(class = "theme-preview",
+                                    div(class = "theme-header", style = "background-color: #7B3F00;", "Header"),
+                                    div(class = "theme-body", style = "background-color: #FFF5EB;", "Content Area")
+                                ),
+                                div(class = "theme-name", "Orange & Brown")
+                            )
+                     ),
+                     column(4,
+                            div(id = "theme_blue_navy", class = paste0("theme-option ", ifelse(app_settings$theme == "blue_navy", "active", "")),
+                                div(class = "theme-preview",
+                                    div(class = "theme-header", style = "background-color: #1A2A52;", "Header"),
+                                    div(class = "theme-body", style = "background-color: #F7FAFF;", "Content Area")
+                                ),
+                                div(class = "theme-name", "Blue & Navy")
+                            )
+                     ),
+                     column(4,
+                            div(id = "theme_green_forest", class = paste0("theme-option ", ifelse(app_settings$theme == "green_forest", "active", "")),
+                                div(class = "theme-preview",
+                                    div(class = "theme-header", style = "background-color: #1E5631;", "Header"),
+                                    div(class = "theme-body", style = "background-color: #F5FFF7;", "Content Area")
+                                ),
+                                div(class = "theme-name", "Green & Forest")
+                            )
+                     )
+                   )
+               )
+        )
+      ),
+      
+      fluidRow(
+        column(6,
+               div(class = "settings-section",
+                   h3(class = "settings-title", "Store Information"),
+                   textInput("store_name", "Store Name:", value = app_settings$store_name),
+                   textInput("owner_name", "Owner Name:", value = app_settings$owner_name),
+                   textInput("contact_number", "Contact Number:", value = app_settings$contact_number),
+                   textAreaInput("address", "Address:", value = app_settings$address, height = "100px"),
+                   br(),
+                   actionButton("save_store_info", "Save Store Information", class = "btn btn-primary")
+               )
+        ),
+        
+        column(6,
+               div(class = "settings-section",
+                   h3(class = "settings-title", "User Preferences"),
+                   sliderInput("table_rows", "Default Table Rows:", 
+                               min = 5, max = 50, step = 5, value = app_settings$table_pageLength),
+                   selectInput("default_tab", "Default Starting Tab:",
+                               choices = c("Load & GCash Transactions" = "transactions", 
+                                           "Store Sales" = "sales",
+                                           "Analytics" = "analytics"),
+                               selected = app_settings$default_tab),
+                   hr(),
+                   h4("Data Management"),
+                   br(),
+                   fluidRow(
+                     column(6, downloadButton("backup_all_data", "Backup All Data", class = "btn btn-primary")),
+                     column(6, fileInput("restore_data", "Restore Data", accept = ".zip"))
+                   ),
+                   hr(),
+                   actionButton("save_preferences", "Save Preferences", class = "btn btn-primary")
+               )
+        )
+      )
+    )
+  ),
+  
+  # Footer
+  div(class = "owner-credit", 
+      textOutput("footer")
+  )
+)
+
+# Server logic
+server <- function(input, output, session) {
+  
+  # Reactive values for transactions tab
+  transactions_data <- reactiveVal()
+  transactions_history_stack <- reactiveValues(data = list())
+  transactions_redo_stack <- reactiveValues(data = list())
+  
+  # Reactive values for sales tab
+  sales_reactive <- reactiveVal(sales_data)
+  selected_sale <- reactiveVal(NULL)
+  
+  # Initialize transactions data
+  read_transactions <- function() {
+    df <- read.csv(transactions_file, stringsAsFactors = FALSE)
+    df$Date <- as.Date(df$Date)
+    return(df)
+  }
+  transactions_data(read_transactions())
+  
+  # Save settings function
+  save_settings <- function(new_settings) {
+    saveRDS(new_settings, settings_file)
+  }
+  
+  # Save transactions data
+  save_transactions <- function(df) {
+    transactions_history_stack$data <- append(transactions_history_stack$data, list(transactions_data()))
+    transactions_redo_stack$data <- list()
+    write.csv(df, transactions_file, row.names = FALSE)
+    transactions_data(df)
+  }
+  
+  # Save sales data
+  save_sales_data <- function(df) {
+    sales_reactive(df)
+    saveRDS(df, sales_data_path)
+  }
+  
+  # Display store name in header
+  output$storeNameDisplay <- renderText({
+    app_settings$store_name
+  })
+  
+  # Footer display
+  output$footer <- renderText({
+    paste("© 2023", app_settings$store_name, "| Developed for", app_settings$owner_name)
+  })
+  
+  # ==========================================
+  # TAB 1: TRANSACTIONS (LOAD & GCASH) LOGIC
+  # ==========================================
+  
+  # Submit transaction
+  observeEvent(input$submit, {
+    req(input$customer_name, input$mobile, input$totalamount)
+    
+    mobile_digits <- gsub("[^0-9]", "", input$mobile)
+    if (nchar(mobile_digits) != 11) {
+      showNotification("❌ Invalid mobile number!", type = "error")
+      return()
+    }
+    
+    profit <- if(input$type == "Load") {
+      if(input$totalamount >=1 & input$totalamount <50) {
+        3
+      } else if (input$totalamount >=50 & input$totalamount <100) {
+        5
+      } else if (input$totalamount >=100 & input$totalamount <200) {
+        10
+      } else if (input$totalamount >=200 & input$totalamount <300) {
+        15
+      } else if (input$totalamount >=300 & input$totalamount <400) {
+        20
+      } else if (input$totalamount >=400 & input$totalamount <500) {
+        25
+      } else if (input$totalamount >=500 & input$totalamount <=1000) {
+        50
+      } else {
+        60
+      }
+    } else if(input$type %in% c("GCash-In", "GCash-Out")) {
+      if (input$totalamount <1) {
+        0
+      } else if (input$totalamount <=250) {
+        5
+      } else if (input$totalamount >250 & input$totalamount <=500) {
+        10
+      } else if (input$totalamount >500 & input$totalamount <=750) {
+        15
+      } else if (input$totalamount >750 & input$totalamount <=1000) {
+        20
+      } else if (input$totalamount >1000 & input$totalamount <=1250) {
+        25
+      } else if (input$totalamount >1250 & input$totalamount <=1500) {
+        30
+      } else if (input$totalamount >1500 & input$totalamount <=1750) {
+        35
+      } else if (input$totalamount >1750 & input$totalamount <=2000) {
+        40
+      } else if (input$totalamount >2000 & input$totalamount <=2250) {
+        45
+      } else if (input$totalamount >2250 & input$totalamount <=2500) {
+        50
+      } else if (input$totalamount >2500 & input$totalamount <=2750) {
+        55
+      } else if (input$totalamount >2750 & input$totalamount <=3000) {
+        60
+      } else if (input$totalamount >3000 & input$totalamount <=3250) {
+        65
+      } else if (input$totalamount >3250 & input$totalamount <=3500) {
+        70
+      } else if (input$totalamount >3500 & input$totalamount <=3750) {
+        75
+      } else if (input$totalamount >3750 & input$totalamount <=4000) {
+        80
+      } else if (input$totalamount >4000 & input$totalamount <=4250) {
+        85
+      } else if (input$totalamount >4250 & input$totalamount <=4500) {
+        90
+      } else if (input$totalamount >4500 & input$totalamount <=4750) {
+        95
+      } else if (input$totalamount >4750 & input$totalamount <=5000) {
+        100
+      } else {
+        105
+      }
+    } else {
+      0
+    }
+    
+    new_entry <- data.frame(
+      Date = Sys.Date(),
+      Customer_Name = input$customer_name,
+      Mobile_Number = input$mobile,
+      Type = input$type,
+      Total_Amount = input$totalamount,  
+      Profit = profit,
+      stringsAsFactors = FALSE
+    )
+    
+    df <- transactions_data()
+    updated_df <- rbind(df, new_entry)
+    save_transactions(updated_df)
+    
+    updateTextInput(session, "customer_name", value = "")
+    updateTextInput(session, "mobile", value = "")
+    updateNumericInput(session, "totalamount", value = 0)
+    
+    showNotification("✅ Transaction Saved!", type = "message")
+  })
+  
+  # Delete row
+  observeEvent(input$deleterow, {
+    req(input$data_table_rows_selected)
+    selected_row <- input$data_table_rows_selected
+    df <- transactions_data()
+    df <- df[-selected_row, ]
+    save_transactions(df)
+  })
+  
+  # Clear history
+  observeEvent(input$clearhistory, {
+    showModal(modalDialog(
+      title = "Confirm Clear History",
+      "Are you sure you want to clear all transaction history? This action cannot be undone.",
+      footer = tagList(
+        modalButton("Cancel"),
+        actionButton("confirmClear", "Yes, Clear All", class = "btn btn-danger")
+      )
+    ))
+  })
+  
+  observeEvent(input$confirmClear, {
+    empty_df <- data.frame(
+      Date = as.Date(character()),
+      Customer_Name = character(),
+      Mobile_Number = character(),
+      Type = character(),
+      Total_Amount = numeric(),
+      Profit = numeric(),
+      stringsAsFactors = FALSE
+    )
+    write.csv(empty_df, transactions_file, row.names = FALSE)
+    transactions_data(empty_df)  
+    showNotification("🧹 History cleared successfully!", type = "message")
+    removeModal()
+  })
+  
+  # Render transactions table
+  output$data_table <- renderDT({
+    datatable(
+      transactions_data(), 
+      options = list(
+        pageLength = app_settings$table_pageLength,
+        dom = 'Blfrtip',
+        buttons = c('copy', 'csv', 'excel', 'pdf')
+      ), 
+      selection = "single",
+      class = "display responsive compact"
+    )
+  })
+  
+  # Download transactions
+  output$downloadData <- downloadHandler(
+    filename = function() {
+      paste("transactions-", Sys.Date(), ".csv", sep = "")
+    },
+    content = function(file) {
+      write.csv(transactions_data(), file, row.names = FALSE)
+    }
+  )
+  
+  # Undo function
+  observeEvent(input$undoBtn, {
+    if (length(transactions_history_stack$data) > 0) {
+      last_state <- tail(transactions_history_stack$data, 1)[[1]]
+      transactions_history_stack$data <- head(transactions_history_stack$data, -1)
+      transactions_redo_stack$data <- append(transactions_redo_stack$data, list(transactions_data()))
+      
+      # Update current data
+      current <- transactions_data()
+      transactions_data(last_state)
+      write.csv(last_state, transactions_file, row.names = FALSE)
+      
+      showNotification("↩️ Undo successful!", type = "message")
+    } else {
+      showNotification("⚠️ Nothing to undo!", type = "warning")
+    }
+  })
+  
+  # Redo function
+  observeEvent(input$redoBtn, {
+    if (length(transactions_redo_stack$data) > 0) {
+      next_state <- tail(transactions_redo_stack$data, 1)[[1]]
+      transactions_redo_stack$data <- head(transactions_redo_stack$data, -1)
+      transactions_history_stack$data <- append(transactions_history_stack$data, list(transactions_data()))
+      
+      # Update current data
+      transactions_data(next_state)
+      write.csv(next_state, transactions_file, row.names = FALSE)
+      
+      showNotification("↪️ Redo successful!", type = "message")
+    } else {
+      showNotification("⚠️ Nothing to redo!", type = "warning")
+    }
+  })
+  
+  # ==========================================
+  # TAB 2: STORE SALES LOGIC
+  # ==========================================
+  
+  # Dynamic UI for product selection
+  output$product_select <- renderUI({
+    req(input$category)
+    
+    if (input$category == "") {
+      return(selectInput("product", "Product:", choices = ""))
+    }
+    
+    cat_data <- product_data[[input$category]]
+    product_choices <- c(cat_data$Product, "Others")
+    
+    selectInput("product", "Product:", choices = c("", product_choices))
+  })
+  
+  # Show text input for "Others" option
+  output$others_input <- renderUI({
+    req(input$product)
+    
+    if (input$product == "Others") {
+      textInput("other_product", "Specify Product:")
+    }
+  })
+  
+  # Dynamic UI for unit cost & price
+  output$unit_cost_input <- renderUI({
+    req(input$category, input$product)
+    
+    if (input$product == "" || input$product == "Others") {
+      numericInput("unit_cost", "Unit Cost (₱):", value = 0, min = 0)
+    } else {
+      cat_data <- product_data[[input$category]]
+      product_row <- cat_data[cat_data$Product == input$product, ]
+      
+      if (nrow(product_row) > 0) {
+        numericInput("unit_cost", "Unit Cost (₱):", value = product_row$Cost, min = 0)
+      } else {
+        numericInput("unit_cost", "Unit Cost (₱):", value = 0, min = 0)
+      }
+    }
+  })
+  
+  output$unit_price_input <- renderUI({
+    req(input$category, input$product)
+    
+    if (input$product == "" || input$product == "Others") {
+      numericInput("unit_price", "Unit Price (₱):", value = 0, min = 0)
+    } else {
+      cat_data <- product_data[[input$category]]
+      product_row <- cat_data[cat_data$Product == input$product, ]
+      
+      if (nrow(product_row) > 0) {
+        numericInput("unit_price", "Unit Price (₱):", value = product_row$Price, min = 0)
+      } else {
+        numericInput("unit_price", "Unit Price (₱):", value = 0, min = 0)
+      }
+    }
+  })
+  
+  # Add sale
+  observeEvent(input$add_sale, {
+    req(input$category, input$unit_cost, input$unit_price, input$quantity)
+    
+    # Get product name
+    product_name <- if (input$product == "Others" && !is.null(input$other_product)) {
+      input$other_product
+    } else {
+      input$product
+    }
+    
+    # Input validation
+    if (product_name == "" || product_name == "Others") {
+      showNotification("❌ Please select or enter a valid product name", type = "error")
+      return()
+    }
+    
+    if (input$unit_cost <= 0 || input$unit_price <= 0) {
+      showNotification("❌ Cost and price must be greater than zero", type = "error")
+      return()
+    }
+    
+    # Calculate profit
+    total_cost <- input$unit_cost * input$quantity
+    total_price <- input$unit_price * input$quantity
+    profit <- total_price - total_cost
+    
+    # Prepare new sale entry
+    new_sale <- data.frame(
+      Date = Sys.Date(),
+      Category = input$category,
+      Product = product_name,
+      Quantity = input$quantity,
+      Unit_Cost = input$unit_cost,
+      Unit_Price = input$unit_price,
+      Profit = profit,
+      stringsAsFactors = FALSE
+    )
+    
+    # Add to sales data
+    current_sales <- sales_reactive()
+    updated_sales <- rbind(current_sales, new_sale)
+    save_sales_data(updated_sales)
+    
+    showNotification("✅ Sale added successfully!", type = "message")
+  })
+  
+  # Update sale
+  observeEvent(input$update_sale, {
+    req(selected_sale(), input$category, input$unit_cost, input$unit_price, input$quantity)
+    
+    # Get product name
+    product_name <- if (input$product == "Others" && !is.null(input$other_product)) {
+      input$other_product
+    } else {
+      input$product
+    }
+    
+    # Input validation
+    if (product_name == "" || product_name == "Others") {
+      showNotification("❌ Please select or enter a valid product name", type = "error")
+      return()
+    }
+    
+    # Calculate profit
+    total_cost <- input$unit_cost * input$quantity
+    total_price <- input$unit_price * input$quantity
+    profit <- total_price - total_cost
+    
+    # Update selected sale
+    current_sales <- sales_reactive()
+    selected_idx <- selected_sale()
+    
+    if (selected_idx > nrow(current_sales)) {
+      showNotification("❌ Invalid selection!", type = "error")
+      return()
+    }
+    
+    current_sales[selected_idx, "Category"] <- input$category
+    current_sales[selected_idx, "Product"] <- product_name
+    current_sales[selected_idx, "Quantity"] <- input$quantity
+    current_sales[selected_idx, "Unit_Cost"] <- input$unit_cost
+    current_sales[selected_idx, "Unit_Price"] <- input$unit_price
+    current_sales[selected_idx, "Profit"] <- profit
+    
+    save_sales_data(current_sales)
+    selected_sale(NULL)
+    
+    showNotification("✅ Sale updated successfully!", type = "message")
+  })
+  
+  # Delete sale
+  observeEvent(input$deleteSale, {
+    req(input$sales_table_rows_selected)
+    
+    selected_rows <- input$sales_table_rows_selected
+    current_sales <- sales_reactive()
+    
+    if (length(selected_rows) > 0) {
+      updated_sales <- current_sales[-selected_rows, ]
+      save_sales_data(updated_sales)
+      showNotification("🗑️ Sale(s) deleted successfully!", type = "message")
+    }
+  })
+  
+  # Clear all sales
+  observeEvent(input$clear_sales, {
+    showModal(modalDialog(
+      title = "Confirm Clear Sales",
+      "Are you sure you want to clear all sales data? This action cannot be undone.",
+      footer = tagList(
+        modalButton("Cancel"),
+        actionButton("confirmClearSales", "Yes, Clear All", class = "btn btn-danger")
+      )
+    ))
+  })
+  
+  observeEvent(input$confirmClearSales, {
+    empty_sales <- data.frame(
+      Date = as.Date(character()),
+      Category = character(),
+      Product = character(),
+      Quantity = numeric(),
+      Unit_Cost = numeric(),
+      Unit_Price = numeric(),
+      Profit = numeric(),
+      stringsAsFactors = FALSE
+    )
+    
+    save_sales_data(empty_sales)
+    removeModal()
+    showNotification("🧹 All sales data cleared!", type = "message")
+  })
+  
+  # Populate form when a sale is selected
+  observeEvent(input$sales_table_rows_selected, {
+    req(input$sales_table_rows_selected)
+    
+    selected_idx <- input$sales_table_rows_selected[1]
+    selected_sale(selected_idx)
+    
+    sale <- sales_reactive()[selected_idx, ]
+    
+    updateSelectInput(session, "category", selected = sale$Category)
+    
+    # Need to wait for the product list to update
+    observe({
+      req(input$category)
+      if (input$category == sale$Category) {
+        cat_data <- product_data[[sale$Category]]
+        if (!is.null(cat_data)) {
+          product_choices <- c(cat_data$Product, "Others")
+          
+          if (sale$Product %in% product_choices) {
+            updateSelectInput(session, "product", selected = sale$Product)
+          } else {
+            updateSelectInput(session, "product", selected = "Others")
+            if (!is.null(input$other_product)) {
+              updateTextInput(session, "other_product", value = sale$Product)
+            }
+          }
+        }
+      }
+    })
+    
+    # Update quantity, cost and price
+    updateNumericInput(session, "quantity", value = sale$Quantity)
+    
+    # These will be updated by the renderUI if the product exists in the category
+    if (!is.null(input$unit_cost)) {
+      updateNumericInput(session, "unit_cost", value = sale$Unit_Cost)
+    }
+    
+    if (!is.null(input$unit_price)) {
+      updateNumericInput(session, "unit_price", value = sale$Unit_Price)
+    }
+  })
+  
+  # Render sales table with time period filter
+  output$sales_table <- renderDT({
+    sales_data <- sales_reactive()
+    
+    if (nrow(sales_data) == 0) {
+      return(data.frame(
+        Date = as.Date(character()),
+        Category = character(),
+        Product = character(),
+        Quantity = numeric(),
+        Unit_Cost = numeric(),
+        Unit_Price = numeric(),
+        Profit = numeric()
+      ))
+    }
+    
+    # Apply time period filter
+    if (input$period_sales == "Today") {
+      sales_data <- sales_data[sales_data$Date == Sys.Date(), ]
+    } else if (input$period_sales == "This Week") {
+      week_start <- Sys.Date() - as.numeric(format(Sys.Date(), "%u")) + 1
+      week_end <- week_start + 6
+      sales_data <- sales_data[sales_data$Date >= week_start & sales_data$Date <= week_end, ]
+    } else if (input$period_sales == "This Month") {
+      month_start <- as.Date(format(Sys.Date(), "%Y-%m-01"))
+      next_month <- month_start + months(1)
+      month_end <- next_month - days(1)
+      sales_data <- sales_data[sales_data$Date >= month_start & sales_data$Date <= month_end, ]
+    } else if (input$period_sales != "All Time") {
+      # Custom date range
+      req(input$date_range)
+      start_date <- input$date_range[1]
+      end_date <- input$date_range[2]
+      sales_data <- sales_data[sales_data$Date >= start_date & sales_data$Date <= end_date, ]
+    }
+    
+    # Format the table
+    datatable(
+      sales_data,
+      options = list(
+        pageLength = app_settings$table_pageLength,
+        dom = 'Blfrtip',
+        buttons = c('copy', 'csv', 'excel', 'pdf')
+      ),
+      selection = "single",
+      class = "display responsive compact"
+    ) %>% 
+      formatCurrency(columns = c("Unit_Cost", "Unit_Price", "Profit"), currency = "₱", digits = 2)
+  })
+  
+  # Download sales data
+  output$downloadSales <- downloadHandler(
+    filename = function() {
+      paste("sales-data-", Sys.Date(), ".csv", sep = "")
+    },
+    content = function(file) {
+      write.csv(sales_reactive(), file, row.names = FALSE)
+    }
+  )
+  
+  # Calculate profit summaries for sales tab cards
+  output$daily_profit <- renderText({
+    sales_data <- sales_reactive()
+    today_sales <- sales_data[sales_data$Date == Sys.Date(), ]
+    profit <- sum(today_sales$Profit)
+    
+    paste0("₱", format(profit, big.mark = ",", scientific = FALSE, digits = 2))
+  })
+  
+  output$weekly_profit <- renderText({
+    sales_data <- sales_reactive()
+    week_start <- Sys.Date() - as.numeric(format(Sys.Date(), "%u")) + 1
+    week_end <- week_start + 6
+    week_sales <- sales_data[sales_data$Date >= week_start & sales_data$Date <= week_end, ]
+    profit <- sum(week_sales$Profit)
+    
+    paste0("₱", format(profit, big.mark = ",", scientific = FALSE, digits = 2))
+  })
+  
+  output$monthly_profit <- renderText({
+    sales_data <- sales_reactive()
+    month_start <- as.Date(format(Sys.Date(), "%Y-%m-01"))
+    next_month <- month_start + months(1)
+    month_end <- next_month - days(1)
+    month_sales <- sales_data[sales_data$Date >= month_start & sales_data$Date <= month_end, ]
+    profit <- sum(month_sales$Profit)
+    
+    paste0("₱", format(profit, big.mark = ",", scientific = FALSE, digits = 2))
+  })
+  
+  # ==========================================
+  # TAB 3: ANALYTICS LOGIC
+  # ==========================================
+  
+  # Helper function to get filtered data based on time period
+  get_filtered_data <- function(data, period, date_range) {
+    if (nrow(data) == 0) return(data)
+    
+    if (period == "daily") {
+      # Use date range if provided, otherwise last 30 days
+      if (!is.null(date_range) && any(!is.na(date_range))) {
+        start_date <- date_range[1]
+        end_date <- date_range[2]
+      } else {
+        end_date <- Sys.Date()
+        start_date <- end_date - 30
+      }
+      
+      filtered <- data[data$Date >= start_date & data$Date <= end_date, ]
+      return(filtered)
+    } else if (period == "weekly") {
+      # Group by week
+      data$Week <- format(data$Date, "%Y-W%V")
+      
+      # Use date range if provided, otherwise last 12 weeks
+      if (!is.null(date_range) && any(!is.na(date_range))) {
+        start_date <- date_range[1]
+        end_date <- date_range[2]
+        filtered <- data[data$Date >= start_date & data$Date <= end_date, ]
+      } else {
+        end_week <- format(Sys.Date(), "%Y-W%V")
+        start_date <- Sys.Date() - 12*7
+        filtered <- data[data$Date >= start_date, ]
+      }
+      
+      return(filtered)
+    } else if (period == "monthly") {
+      # Group by month
+      data$Month <- format(data$Date, "%Y-%m")
+      
+      # Use date range if provided, otherwise last 12 months
+      if (!is.null(date_range) && any(!is.na(date_range))) {
+        start_date <- date_range[1]
+        end_date <- date_range[2]
+        filtered <- data[data$Date >= start_date & data$Date <= end_date, ]
+      } else {
+        start_date <- Sys.Date() - 365
+        filtered <- data[data$Date >= start_date, ]
+      }
+      
+      return(filtered)
+    }
+    
+    return(data)
+  }
+  
+  # Helper function to aggregate data by time period
+  aggregate_by_period <- function(data, period) {
+    if (nrow(data) == 0) return(data.frame(Period = character(), Profit = numeric()))
+    
+    if (period == "daily") {
+      result <- aggregate(Profit ~ Date, data = data, sum)
+      names(result) <- c("Period", "Profit")
+      result$Period <- as.character(result$Period)
+    } else if (period == "weekly") {
+      result <- aggregate(Profit ~ Week, data = data, sum)
+      names(result) <- c("Period", "Profit")
+    } else if (period == "monthly") {
+      result <- aggregate(Profit ~ Month, data = data, sum)
+      names(result) <- c("Period", "Profit")
+    }
+    
+    return(result)
+  }
+  
+  # Total combined profit
+  output$total_combined_profit <- renderText({
+    # Get data based on selected sources
+    data_sources <- input$data_sources
+    
+    total_profit <- 0
+    
+    if ("sales" %in% data_sources) {
+      sales_filtered <- get_filtered_data(sales_reactive(), input$analytics_time, input$analytics_date_range)
+      total_profit <- total_profit + sum(sales_filtered$Profit)
+    }
+    
+    if ("transactions" %in% data_sources) {
+      transactions_filtered <- get_filtered_data(transactions_data(), input$analytics_time, input$analytics_date_range)
+      total_profit <- total_profit + sum(transactions_filtered$Profit)
+    }
+    
+    paste0("₱", format(total_profit, big.mark = ",", scientific = FALSE, digits = 2))
+  })
+  
+  # Profit pie chart
+  output$profit_pie_chart <- renderPlotly({
+    # Get data based on selected sources
+    data_sources <- input$data_sources
+    
+    profit_by_source <- c()
+    
+    if ("sales" %in% data_sources) {
+      sales_filtered <- get_filtered_data(sales_reactive(), input$analytics_time, input$analytics_date_range)
+      sales_profit <- sum(sales_filtered$Profit)
+      if (sales_profit > 0) {
+        profit_by_source <- c(profit_by_source, "Store Sales" = sales_profit)
+      }
+    }
+    
+    if ("transactions" %in% data_sources) {
+      transactions_filtered <- get_filtered_data(transactions_data(), input$analytics_time, input$analytics_date_range)
+      
+      # Split by transaction type
+      if (nrow(transactions_filtered) > 0) {
+        by_type <- aggregate(Profit ~ Type, transactions_filtered, sum)
+        for (i in 1:nrow(by_type)) {
+          profit_by_source <- c(profit_by_source, setNames(by_type$Profit[i], by_type$Type[i]))
+        }
+      }
+    }
+    
+    if (length(profit_by_source) == 0) {
+      return(plot_ly(type = "pie") %>% 
+               layout(title = "No profit data available",
+                      xaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE),
+                      yaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE)))
+    }
+    
+    plot_data <- data.frame(
+      Source = names(profit_by_source),
+      Profit = unname(profit_by_source)
+    )
+    
+    # Create a pretty pie chart
+    plot_ly(plot_data, labels = ~Source, values = ~Profit, type = "pie",
+            textinfo = "label+percent",
+            hoverinfo = "text",
+            text = ~paste("₱", format(Profit, big.mark = ",", scientific = FALSE)),
+            marker = list(colors = colorRampPalette(c("#7B3F00", "#A0522D", "#CD853F", "#DEB887"))(length(profit_by_source)))) %>%
+      layout(title = "Profit by Source",
+             showlegend = TRUE)
+  })
+  
+  # Profit trend chart
+  output$profit_trend_chart <- renderPlotly({
+    data_sources <- input$data_sources
+    period <- input$analytics_time
+    
+    # Create time labels based on period
+    period_labels <- if (period == "daily") {
+      "Daily"
+    } else if (period == "weekly") {
+      "Weekly"
+    } else {
+      "Monthly"
+    }
+    
+    # Calculate all data by series
+    all_series <- list()
+    
+    if ("sales" %in% data_sources) {
+      sales_filtered <- get_filtered_data(sales_reactive(), period, input$analytics_date_range)
+      if (nrow(sales_filtered) > 0) {
+        sales_agg <- aggregate_by_period(sales_filtered, period)
+        all_series[["Store Sales"]] <- sales_agg
+      }
+    }
+    
+    if ("transactions" %in% data_sources) {
+      transactions_filtered <- get_filtered_data(transactions_data(), period, input$analytics_date_range)
+      
+      if (nrow(transactions_filtered) > 0) {
+        # Split by transaction type
+        for (type in unique(transactions_filtered$Type)) {
+          type_data <- transactions_filtered[transactions_filtered$Type == type, ]
+          type_agg <- aggregate_by_period(type_data, period)
+          all_series[[type]] <- type_agg
+        }
+      }
+    }
+    
+    if (length(all_series) == 0) {
+      return(plot_ly() %>% 
+               layout(title = "No trend data available",
+                      xaxis = list(title = "Date"),
+                      yaxis = list(title = "Profit (₱)")))
+    }
+    
+    # Create the plot
+    p <- plot_ly()
+    
+    for (i in 1:length(all_series)) {
+      series_name <- names(all_series)[i]
+      series_data <- all_series[[i]]
+      
+      if (nrow(series_data) > 0) {
+        p <- p %>% add_trace(
+          x = series_data$Period,
+          y = series_data$Profit,
+          name = series_name,
+          type = 'scatter',
+          mode = 'lines+markers',
+          line = list(width = 2),
+          marker = list(size = 8)
+        )
+      }
+    }
+    
+    p %>% layout(
+      title = paste(period_labels, "Profit Trends"),
+      xaxis = list(
+        title = "Time Period",
+        tickangle = -45
+      ),
+      yaxis = list(
+        title = "Profit (₱)",
+        hoverformat = "₱%{y:,.2f}"
+      ),
+      legend = list(x = 0.1, y = 0.9),
+      hovermode = "closest"
+    )
+  })
+  
+  # Top products chart
+  output$top_products_chart <- renderPlotly({
+    req("sales" %in% input$data_sources)
+    
+    sales_filtered <- get_filtered_data(sales_reactive(), input$analytics_time, input$analytics_date_range)
+    
+    if (nrow(sales_filtered) == 0) {
+      return(plot_ly() %>% 
+               layout(title = "No product data available",
+                      xaxis = list(title = "Product"),
+                      yaxis = list(title = "Profit (₱)")))
+    }
+    
+    # Aggregate by product
+    product_profit <- aggregate(Profit ~ Product, data = sales_filtered, sum)
+    product_profit <- product_profit[order(-product_profit$Profit), ]
+    
+    # Take top 10
+    if (nrow(product_profit) > 10) {
+      product_profit <- product_profit[1:10, ]
+    }
+    
+    # Create horizontal bar chart
+    plot_ly(product_profit, 
+            x = ~Profit,
+            y = ~reorder(Product, Profit),
+            type = "bar",
+            orientation = "h",
+            marker = list(color = "#7B3F00"),
+            text = ~paste("₱", format(Profit, big.mark = ",", scientific = FALSE, digits = 2)),
+            hoverinfo = "text"
+    ) %>%
+      layout(
+        title = "Top Profitable Products",
+        xaxis = list(title = "Profit (₱)"),
+        yaxis = list(title = ""),
+        margin = list(l = 120)
+      )
+  })
+  
+  # Transaction volume chart
+  output$transaction_volume_chart <- renderPlotly({
+    req("transactions" %in% input$data_sources)
+    
+    transactions_filtered <- get_filtered_data(transactions_data(), input$analytics_time, input$analytics_date_range)
+    
+    if (nrow(transactions_filtered) == 0) {
+      return(plot_ly() %>% 
+               layout(title = "No transaction data available",
+                      xaxis = list(title = "Type"),
+                      yaxis = list(title = "Count")))
+    }
+    
+    # Count by type
+    type_counts <- as.data.frame(table(transactions_filtered$Type))
+    names(type_counts) <- c("Type", "Count")
+    
+    # Create pie chart
+    plot_ly(type_counts, 
+            labels = ~Type,
+            values = ~Count,
+            type = "pie",
+            textinfo = "label+percent",
+            hoverinfo = "text",
+            text = ~paste(Count, "transactions"),
+            marker = list(colors = colorRampPalette(c("#1A2A52", "#3A5798", "#6B8FD4"))(nrow(type_counts)))
+    ) %>%
+      layout(
+        title = "Transaction Volume by Type",
+        showlegend = TRUE
+      )
+  })
+  
+  # ==========================================
+  # TAB 4: SETTINGS LOGIC
+  # ==========================================
+  
+  # Theme selection handlers
+  observeEvent(input$theme_orange_brown, {
+    app_settings$theme <- "orange_brown"
+    shinyjs::html("theme-css", getCustomCSS(app_settings$theme))
+    shinyjs::removeClass(selector = ".theme-option", class = "active")
+    shinyjs::addClass(selector = "#theme_orange_brown", class = "active")
+  })
+  
+  observeEvent(input$theme_blue_navy, {
+    app_settings$theme <- "blue_navy"
+    shinyjs::html("theme-css", getCustomCSS(app_settings$theme))
+    shinyjs::removeClass(selector = ".theme-option", class = "active")
+    shinyjs::addClass(selector = "#theme_blue_navy", class = "active")
+  })
+  
+  observeEvent(input$theme_green_forest, {
+    app_settings$theme <- "green_forest"
+    shinyjs::html("theme-css", getCustomCSS(app_settings$theme))
+    shinyjs::removeClass(selector = ".theme-option", class = "active")
+    shinyjs::addClass(selector = "#theme_green_forest", class = "active")
+  })
+  
+  # Save store info
+  observeEvent(input$save_store_info, {
+    app_settings$store_name <- input$store_name
+    app_settings$owner_name <- input$owner_name
+    app_settings$contact_number <- input$contact_number
+    app_settings$address <- input$address
+    
+    save_settings(app_settings)
+    
+    showNotification("✅ Store information saved!", type = "message")
+  })
+  
+  # Save user preferences
+  observeEvent(input$save_preferences, {
+    app_settings$table_pageLength <- input$table_rows
+    app_settings$default_tab <- input$default_tab
+    
+    save_settings(app_settings)
+    
+    showNotification("✅ User preferences saved!", type = "message")
+  })
+  
+  # Backup all data
+  output$backup_all_data <- downloadHandler(
+    filename = function() {
+      paste("store-management-backup-", format(Sys.time(), "%Y%m%d-%H%M%S"), ".zip", sep = "")
+    },
+    content = function(file) {
+      # Create temporary directory for files
+      temp_dir <- tempdir()
+      
+      # Copy files to temp directory
+      file.copy(transactions_file, file.path(temp_dir, "transactions.csv"))
+      saveRDS(sales_reactive(), file.path(temp_dir, "sales_data.rds"))
+      saveRDS(app_settings, file.path(temp_dir, "settings.rds"))
+      
+      # Create zip file
+      zip_command <- paste("zip -j", shQuote(file), 
+                           shQuote(file.path(temp_dir, "transactions.csv")),
+                           shQuote(file.path(temp_dir, "sales_data.rds")),
+                           shQuote(file.path(temp_dir, "settings.rds")))
+      
+      system(zip_command)
+    }
+  )
+  
+  # Restore data from backup
+  observeEvent(input$restore_data, {
+    req(input$restore_data)
+    
+    # Extract the zip file
+    temp_dir <- tempdir()
+    unzip(input$restore_data$datapath, exdir = temp_dir)
+    
+    # Check if all required files exist
+    transactions_path <- file.path(temp_dir, "transactions.csv")
+    sales_path <- file.path(temp_dir, "sales_data.rds")
+    settings_path <- file.path(temp_dir, "settings.rds")
+    
+    if (!all(file.exists(transactions_path, sales_path, settings_path))) {
+      showNotification("❌ Backup file is corrupt or incomplete!", type = "error")
+      return()
+    }
+    
+    # Restore data
+    file.copy(transactions_path, transactions_file, overwrite = TRUE)
+    transactions_data(read_transactions())
+    
+    restored_sales <- readRDS(sales_path)
+    sales_reactive(restored_sales)
+    saveRDS(restored_sales, sales_data_path)
+    
+    restored_settings <- readRDS(settings_path)
+    app_settings <<- restored_settings
+    save_settings(app_settings)
+    
+    # Update UI based on restored settings
+    shinyjs::html("theme-css", getCustomCSS(app_settings$theme))
+    
+    # Update inputs to match restored settings
+    updateTextInput(session, "store_name", value = app_settings$store_name)
+    updateTextInput(session, "owner_name", value = app_settings$owner_name)
+    updateTextInput(session, "contact_number", value = app_settings$contact_number)
+    updateTextAreaInput(session, "address", value = app_settings$address)
+    updateSliderInput(session, "table_rows", value = app_settings$table_pageLength)
+    updateSelectInput(session, "default_tab", selected = app_settings$default_tab)
+    
+    showNotification("✅ Data restored successfully!", type = "message")
+  })
+  
+  # Set default tab on app startup
+  observe({
+    updateTabsetPanel(session, "mainTabs", selected = app_settings$default_tab)
+  })
+}
+
+# Run the app
+shinyApp(ui = ui, server = server)
