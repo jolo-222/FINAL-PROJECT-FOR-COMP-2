@@ -1,0 +1,2268 @@
+# Load necessary libraries
+library(shiny)
+library(readxl)
+library(writexl)
+library(DT)
+library(ggplot2)
+library(shinyjs)
+library(dplyr)
+library(plotly)
+library(bslib)
+library(htmltools)
+library(shinyWidgets)
+library(shinythemes)
+library(lubridate)
+library(scales)
+library(tidyr)
+
+# Initialize global variables and load data
+options(scipen = 999) # Prevent scientific notation
+
+# Initialize transaction data
+data_file <- "transactions.csv"
+if (!file.exists(data_file)) {
+  write.csv(data.frame(
+    Date = as.Date(character()),
+    Customer_Name = character(),
+    Mobile_Number = character(),
+    Type = character(),
+    Total_Amount = numeric(),
+    Profit = numeric(),
+    stringsAsFactors = FALSE
+  ), data_file, row.names = FALSE)
+}
+
+# Initialize product data
+excel_file <- "C:/Users/Jhon lowell Daculan/Downloads/STORE_JAVIER.xlsx" 
+if (file.exists(excel_file)) {
+  sheet_names <- excel_sheets(excel_file)
+  product_data <- lapply(sheet_names, function(sheet) read_excel(excel_file, sheet = sheet))
+  names(product_data) <- sheet_names
+} else {
+  # Provide demo data if file doesn't exist
+  sheet_names <- c("Beverages", "Snacks", "Personal Care", "Others")
+  product_data <- lapply(1:length(sheet_names), function(i) {
+    data.frame(
+      `Product Name` = paste("Product", 1:5), 
+      `Unit Cost (PHP)` = sample(10:50, 5),
+      `Unit Price (PHP)` = sample(50:100, 5),
+      stringsAsFactors = FALSE
+    )
+  })
+  names(product_data) <- sheet_names
+}
+
+# Remove the LETTERS formatting completely
+categories <- setNames(sheet_names, sheet_names)
+
+# Initialize sales data
+saveDataPath <- "sales_data.rds"
+if (file.exists(saveDataPath)) {
+  sales_data <- readRDS(saveDataPath)
+} else {
+  # Initialize reactive sales data if no saved data exists
+  sales_data <- data.frame(
+    Date = as.Date(character()),
+    Category = character(),
+    Product = character(),
+    Quantity = numeric(),
+    Unit_Cost = numeric(),
+    Unit_Price = numeric(),
+    Profit = numeric(),
+    stringsAsFactors = FALSE
+  )
+}
+
+# Custom CSS for styling the entire application
+custom_css <- HTML("
+  :root {
+    --brown-dark: #7B3F00;     /* Dark brown */
+    --brown-medium: #A0522D;   /* Medium brown */
+    --brown-light: #CD853F;    /* Light brown */
+    --brown-lighter: #DEB887;  /* Very light brown */
+    --off-white: #FFF5EB;      /* Light orange as background */
+    --dark-orange: #FF8C00;    /* Dark orange for borders */
+  }
+  
+  body {
+    background-color: #FFF5EB; /* Base color as fallback */
+    animation: backgroundChange 10s steps(3) infinite;
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+  }
+
+  @keyframes backgroundChange {
+    0% {
+      background-color: #FFF5EB; /* Very light orange */
+    }
+    33.33% {
+      background-color: #F0E0C6; /* Very light brown */
+    }
+    66.66% {
+      background-color: #F5E8D7; /* Light beige (blend) */
+    }
+    100% {
+      background-color: #FFF5EB; /* Back to very light orange */
+    }
+  }
+  
+  /* Header styling */
+  .header {
+    background: linear-gradient(to right, var(--brown-dark), var(--brown-medium));
+    color: white;
+    padding: 15px 20px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 1000;
+  }
+  
+  .store-name {
+    font-size: 1.8rem;
+    font-weight: bold;
+    letter-spacing: 1px;
+    margin: 0;
+  }
+  
+  .tagline {
+    font-size: 0.9rem;
+    opacity: 0.9;
+  }
+  
+  .main-title {
+    color: var(--brown-dark);
+    font-weight: bold;
+    text-align: center;
+    margin-bottom: 30px;
+    font-size: 2.5rem;
+    letter-spacing: 1px;
+  }
+  
+  .card {
+    border-radius: 10px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);
+    margin-bottom: 20px;
+    background-color: white;
+    overflow: hidden;
+    animation: fadeIn 0.5s ease-in-out;
+  }
+  
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  
+  .card-header {
+    background-color: var(--brown-dark);
+    color: white;
+    font-weight: bold;
+    padding: 12px 20px;
+    border: none;
+    text-transform: uppercase;
+  }
+  
+  .card-body {
+    padding: 20px;
+  }
+  
+  .sidebar-card {
+    background-color: white;
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 20px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+  }
+  
+  .btn-primary {
+    background-color: white !important;
+    border-color: var(--brown-dark) !important;
+    color: var(--brown-dark) !important;
+    border-radius: 5px;
+    padding: 8px 16px;
+    transition: all 0.3s ease;
+    font-weight: bold !important;
+  }
+  
+  .btn-primary:hover {
+    background-color: var(--brown-lighter) !important;
+    border-color: var(--brown-dark) !important;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+  }
+
+  .btn-danger {
+    background-color: #dc3545 !important;
+    border-color: #dc3545 !important;
+    color: white !important;
+  }
+  
+  .btn-danger:hover {
+    background-color: #c82333 !important;
+    border-color: #bd2130 !important;
+  }
+  
+  .btn-warning {
+    background-color: #ffc107 !important;
+    border-color: #ffc107 !important;
+    color: #212529 !important;
+  }
+  
+  .btn-warning:hover {
+    background-color: #e0a800 !important;
+    border-color: #d39e00 !important;
+  }
+  
+  .btn-dark {
+    background-color: #343a40 !important;
+    border-color: #343a40 !important;
+    color: white !important;
+  }
+  
+  .btn-dark:hover {
+    background-color: #23272b !important;
+    border-color: #1d2124 !important;
+  }
+  
+  .selectize-input {
+    background-color: white !important;
+    border: 2px solid var(--dark-orange) !important;
+    border-radius: 5px !important;
+    box-shadow: none !important;
+    transition: all 0.3s ease;
+  }
+  
+  .selectize-input.focus {
+    border-color: var(--brown-dark) !important;
+    box-shadow: 0 0 0 0.2rem rgba(123, 63, 0, 0.25) !important;
+    transform: scale(1.02);
+  }
+  
+  .selectize-dropdown {
+    background-color: white !important;
+    border: 2px solid var(--dark-orange) !important;
+    border-radius: 0 0 5px 5px !important;
+  }
+  
+  .selectize-dropdown-content .option {
+    background-color: white !important;
+    color: var(--brown-dark) !important;
+    transition: all 0.2s ease;
+    border-bottom: 1px solid var(--brown-lighter);
+  }
+  
+  .selectize-dropdown-content .option:hover,
+  .selectize-dropdown-content .option.active {
+    background-color: var(--brown-lighter) !important;
+  }
+  
+  .form-control {
+    border: 2px solid var(--dark-orange);
+    border-radius: 5px;
+  }
+  
+  .form-control:focus {
+    border-color: var(--brown-dark);
+    box-shadow: 0 0 0 0.2rem rgba(123, 63, 0, 0.25);
+  }
+  
+  .dataTables_wrapper {
+    padding: 10px;
+    background-color: white;
+    border-radius: 10px;
+  }
+  
+  /* Styling for data table headers */
+  table.dataTable thead th {
+    background-color: var(--brown-dark) !important;
+    color: white !important;
+    font-weight: bold !important;
+    border-bottom: 2px solid var(--brown-medium) !important;
+  }
+  
+  /* Remove blue selection color in tables */
+  table.dataTable tbody tr.selected {
+    background-color: var(--brown-lighter) !important;
+  }
+  
+  .dataTables_info, .dataTables_paginate {
+    margin-top: 10px !important;
+    color: var(--brown-dark) !important;
+  }
+  
+  .paginate_button {
+    color: var(--brown-dark) !important;
+  }
+  
+  .paginate_button.current {
+    background: var(--brown-light) !important;
+    border: 1px solid var(--brown-medium) !important;
+  }
+  
+  .summary-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 20px;
+  }
+  
+  .summary-table th {
+    background-color: var(--brown-dark);
+    color: white;
+    text-align: left;
+    padding: 10px;
+    font-weight: bold;
+  }
+  
+  .summary-table td {
+    padding: 10px;
+    border-bottom: 1px solid var(--brown-lighter);
+  }
+  
+  .total-profit {
+    font-size: 1.5rem;
+    font-weight: bold;
+    color: var(--brown-dark);
+    text-align: center;
+    margin-top: 20px;
+    padding: 15px;
+    background-color: white;
+        border-radius: 10px;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    border-left: 5px solid var(--brown-dark);
+  }
+  
+  /* Calendar styling */
+  .daterangepicker .calendar-table {
+    border: 1px solid var(--brown-lighter);
+  }
+  
+  .daterangepicker td.active, .daterangepicker td.active:hover {
+    background-color: var(--brown-medium) !important;
+  }
+  
+  /* Navigation tabs styling */
+  .nav-tabs {
+    border-bottom: 2px solid var(--brown-medium);
+    margin-bottom: 20px;
+  }
+  
+  .nav-tabs .nav-link {
+    color: var(--brown-dark);
+    border: none;
+    border-bottom: 3px solid transparent;
+    font-weight: bold;
+    transition: all 0.3s ease;
+  }
+  
+  .nav-tabs .nav-link:hover {
+    border-color: var(--brown-lighter);
+    background-color: var(--off-white);
+  }
+  
+  .nav-tabs .nav-link.active {
+    color: var(--brown-dark);
+    background-color: transparent;
+    border-color: var(--brown-dark);
+  }
+  
+  /* Stats boxes */
+  .stats-box {
+    background-color: white;
+    border-radius: 10px;
+    padding: 15px;
+    margin-bottom: 15px;
+    text-align: center;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.05);
+    transition: all 0.3s ease;
+    border-left: 4px solid var(--brown-dark);
+  }
+  
+  .stats-box:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 6px 12px rgba(0,0,0,0.1);
+  }
+  
+  .stats-value {
+    font-size: 2rem;
+    font-weight: bold;
+    color: var(--brown-dark);
+    margin-bottom: 10px;
+  }
+  
+  .stats-label {
+    font-size: 0.9rem;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  
+  /* Floating calculator */
+  .calculator-widget {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 300px;
+    background-color: white;
+    border-radius: 10px;
+    box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+    z-index: 1000;
+    transition: all 0.3s ease;
+    transform: translateY(calc(100% + 20px));
+    visibility: hidden;
+    opacity: 0;
+  }
+  
+  .calculator-header {
+    background-color: var(--brown-dark);
+    color: white;
+    padding: 10px 15px;
+    border-radius: 10px 10px 0 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  
+  .calculator-body {
+    padding: 15px;
+  }
+  
+  .calculator-display {
+    width: 100%;
+    padding: 10px;
+    margin-bottom: 10px;
+    text-align: right;
+    font-size: 1.5rem;
+    border: 1px solid var(--brown-lighter);
+    border-radius: 5px;
+  }
+  
+  .calculator-keys {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 5px;
+  }
+  
+  .calculator-key {
+    padding: 10px;
+    text-align: center;
+    background-color: #f0f0f0;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+    cursor: pointer;
+    font-weight: bold;
+    transition: all 0.2s ease;
+  }
+  
+  .calculator-key:hover {
+    background-color: var(--brown-lighter);
+  }
+  
+  .calculator-key.operator {
+    background-color: var(--brown-light);
+    color: white;
+  }
+  
+  .calculator-key.equal {
+    background-color: var(--brown-dark);
+    color: white;
+  }
+  
+  .calculator-toggle {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 60px;
+    height: 60px;
+    background-color: var(--brown-dark);
+    color: white;
+    border-radius: 50%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+    cursor: pointer;
+    z-index: 1001;
+    font-size: 24px;
+    transition: all 0.3s ease;
+  }
+  
+  .calculator-toggle:hover {
+    transform: scale(1.1);
+  }
+  
+  .calculator-widget.show {
+    transform: translateY(0);
+    visibility: visible;
+    opacity: 1;
+  }
+  
+  /* Animations for charts */
+  .chart-container {
+    transition: all 0.5s ease;
+    animation: scaleIn 0.5s ease-in-out;
+  }
+  
+  @keyframes scaleIn {
+    from { transform: scale(0.9); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+  }
+  
+  /* Animation keyframes for widgets */
+  @keyframes pulseGlow {
+    0% { box-shadow: 0 0 5px rgba(205, 133, 63, 0); }
+    50% { box-shadow: 0 0 15px rgba(205, 133, 63, 0.5); }
+    100% { box-shadow: 0 0 5px rgba(205, 133, 63, 0); }
+  }
+  
+  .wiggle-animation:hover {
+    animation: wiggle 0.5s ease-in-out;
+  }
+  
+    @keyframes wiggle {
+    0%, 100% { transform: rotate(0deg); }
+    25% { transform: rotate(-5deg); }
+    50% { transform: rotate(0deg); }
+    75% { transform: rotate(5deg); }
+  }
+  
+  /* Settings panel styling */
+  .settings-section {
+    background-color: white;
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 20px;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+  }
+  
+  .settings-title {
+    color: var(--brown-dark);
+    border-bottom: 2px solid var(--brown-lighter);
+    padding-bottom: 10px;
+    margin-bottom: 20px;
+    font-weight: bold;
+  }
+  
+  .color-swatch {
+    display: inline-block;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    margin-right: 10px;
+    cursor: pointer;
+    border: 2px solid transparent;
+    transition: all 0.2s ease;
+  }
+  
+  .color-swatch:hover {
+    transform: scale(1.2);
+  }
+  
+  .color-swatch.active {
+    border-color: #333;
+    box-shadow: 0 0 0 2px white, 0 0 0 4px #333;
+  }
+")
+
+# Define UI
+ui <- fluidPage(
+  useShinyjs(),
+  tags$head(
+    tags$style(custom_css),
+    tags$link(rel = "stylesheet", href = "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css"),
+    tags$script(HTML("
+      $(document).ready(function() {
+        // Toggle calculator widget
+        $(document).on('click', '.calculator-toggle', function() {
+          $('.calculator-widget').toggleClass('show');
+        });
+        
+        // Calculator logic
+        var calculatorDisplay = '';
+        var firstOperand = null;
+        var waitingForSecondOperand = false;
+        var operator = null;
+        
+        // Update calculator display
+        function updateDisplay() {
+          $('.calculator-display').val(calculatorDisplay || '0');
+        }
+        
+        // Handle number inputs
+        $(document).on('click', '.calculator-key.number', function() {
+          var digit = $(this).text();
+          
+          if (waitingForSecondOperand) {
+            calculatorDisplay = digit;
+            waitingForSecondOperand = false;
+          } else {
+            calculatorDisplay = calculatorDisplay === '0' ? digit : calculatorDisplay + digit;
+          }
+          
+          updateDisplay();
+        });
+        
+        // Handle operator inputs
+        $(document).on('click', '.calculator-key.operator', function() {
+          var nextOperator = $(this).text();
+          
+          if (operator && !waitingForSecondOperand) {
+            calculate();
+          }
+          
+          firstOperand = parseFloat(calculatorDisplay);
+          operator = nextOperator;
+          waitingForSecondOperand = true;
+        });
+        
+        // Handle equals
+        $(document).on('click', '.calculator-key.equal', function() {
+          if (operator && !waitingForSecondOperand) {
+            calculate();
+            operator = null;
+          }
+        });
+        
+        // Handle clear
+        $(document).on('click', '.calculator-key.clear', function() {
+          calculatorDisplay = '0';
+          firstOperand = null;
+          waitingForSecondOperand = false;
+          operator = null;
+          updateDisplay();
+        });
+        
+        // Calculate result
+        function calculate() {
+          var secondOperand = parseFloat(calculatorDisplay);
+          var result = 0;
+          
+          switch(operator) {
+            case '+':
+              result = firstOperand + secondOperand;
+              break;
+            case '-':
+              result = firstOperand - secondOperand;
+              break;
+            case '*':
+              result = firstOperand * secondOperand;
+              break;
+            case '/':
+              result = firstOperand / secondOperand;
+              break;
+          }
+          
+          calculatorDisplay = String(result);
+          updateDisplay();
+          firstOperand = result;
+          waitingForSecondOperand = true;
+        }
+        
+        // Initialize display
+        updateDisplay();
+      });
+    "))
+  ),
+  
+  # Website Header
+  div(class = "header",
+      div(
+        h1(class = "store-name", "Javier Store"),
+        span(class = "tagline", "Store Management System")
+      ),
+      div(
+        span("Today: ", format(Sys.Date(), "%B %d, %Y"))
+      )
+  ),
+  
+  # Main Navigation
+  navbarPage(
+    title = NULL,
+    id = "mainTabs",
+    theme = shinytheme("flatly"),
+    
+    # Tab 1: Load & GCash Transactions
+    tabPanel("📱 Load & GCash", icon = icon("mobile-alt"),
+             br(),
+             fluidRow(
+               column(4,
+                      div(class = "sidebar-card",
+                          h3("New Transaction", style = "color: var(--brown-dark); border-bottom: 2px solid var(--brown-lighter); padding-bottom: 10px;"),
+                          textInput("customer_name", "Customer Name:", placeholder = "Enter customer name"),
+                          textInput("mobile", "Mobile Number:", placeholder = "11-digit mobile number"),
+                          selectInput("type", "Transaction Type:",
+                                      choices = c("Load", "GCash-In", "GCash-Out")),
+                          numericInput("totalamount", "Total Amount(₱):", value = 0, min = 0),
+                          actionButton("submit", "Save Transaction", class = "btn btn-primary", icon = icon("save")),
+                          hr(),
+                          actionButton("deleterow", "Delete Selected", class = "btn btn-warning", icon = icon("trash-alt")),
+                          div(style = "display: flex; gap: 10px; margin-top: 10px;",
+                              actionButton("undoBtn", "Undo", class = "btn btn-dark", icon = icon("undo")),
+                              actionButton("redoBtn", "Redo", class = "btn btn-dark", icon = icon("redo"))
+                          ),
+                          hr(),
+                          downloadButton("downloadData", "Download Transactions", class = "btn btn-primary")
+                      )
+               ),
+               column(8,
+                      div(class = "card",
+                          div(class = "card-header", "Transaction History"),
+                          div(class = "card-body",
+                              DTOutput("data_table"),
+                              hr(),
+                              actionButton("clearhistory", "Clear All History", class = "btn btn-danger", icon = icon("trash"))
+                          )
+                      ),
+                      div(class = "card",
+                          div(class = "card-header", "Transaction Summary"),
+                          div(class = "card-body",
+                              fluidRow(
+                                column(6,
+                                       div(class = "stats-box",
+                                           div(class = "stats-label", "Total Load Transactions"),
+                                           textOutput("total_load_count"),
+                                           div(class = "stats-label", "Total Load Profit"),
+                                           textOutput("total_load_profit")
+                                       )
+                                ),
+                                column(6,
+                                       div(class = "stats-box",
+                                           div(class = "stats-label", "Total GCash Transactions"),
+                                           textOutput("total_gcash_count"),
+                                           div(class = "stats-label", "Total GCash Profit"),
+                                           textOutput("total_gcash_profit")
+                                       )
+                                )
+                              ),
+                              div(class = "total-profit",
+                                  "Total Transaction Profit: ",
+                                  textOutput("total_transaction_profit", inline = TRUE)
+                              )
+                          )
+                      )
+               )
+             )
+    ),
+    
+    # Tab 2: Product Sales
+    tabPanel("🛒 Product Sales", icon = icon("shopping-cart"),
+             br(),
+             fluidRow(
+               column(4,
+                      div(class = "sidebar-card",
+                          h3("New Sale Entry", style = "color: var(--brown-dark); border-bottom: 2px solid var(--brown-lighter); padding-bottom: 10px;"),
+                          dateInput("dateInput", "Date:", value = Sys.Date()),
+                          selectInput("category", "Category:",
+                                      choices = categories),
+                          selectInput("product", "Product:", choices = NULL),
+                          numericInput("quantity", "Quantity:", value = 1, min = 1),
+                          div(id = "productDetails",
+                              div(style = "display: flex; margin-bottom: 15px;",
+                                  div(style = "flex: 1; margin-right: 5px;",
+                                      numericInput("unitCost", "Cost/Unit (₱):", value = 0, min = 0)
+                                  ),
+                                  div(style = "flex: 1; margin-left: 5px;",
+                                      numericInput("unitPrice", "Price/Unit (₱):", value = 0, min = 0)
+                                  )
+                              ),
+                              div(style = "background-color: #f8f9fa; padding: 10px; border-radius: 5px; margin-bottom: 15px;",
+                                  div(style = "display: flex; justify-content: space-between;",
+                                      span("Total Cost:"),
+                                      span(textOutput("totalCost", inline = TRUE))
+                                  ),
+                                  div(style = "display: flex; justify-content: space-between;",
+                                      span("Total Revenue:"),
+                                      span(textOutput("totalRevenue", inline = TRUE))
+                                  ),
+                                  div(style = "display: flex; justify-content: space-between; font-weight: bold;",
+                                      span("Profit:"),
+                                      span(textOutput("profit", inline = TRUE))
+                                  )
+                              )
+                          ),
+                          actionButton("saveSale", "Save Sale", class = "btn btn-primary", icon = icon("save")),
+                          hr(),
+                          actionButton("deleteSale", "Delete Selected", class = "btn btn-warning", icon = icon("trash-alt")),
+                          div(style = "display: flex; gap: 10px; margin-top: 10px;",
+                              actionButton("undoSaleBtn", "Undo", class = "btn btn-dark", icon = icon("undo")),
+                              actionButton("redoSaleBtn", "Redo", class = "btn btn-dark", icon = icon("redo"))
+                          ),
+                          hr(),
+                          div(style = "display: flex; gap: 10px;",
+                              downloadButton("downloadExcel", "Export Excel", class = "btn btn-primary"),
+                              downloadButton("downloadCSV", "Export CSV", class = "btn btn-primary")
+                          )
+                      )
+               ),
+               column(8,
+                      div(class = "card",
+                          div(class = "card-header", "Sales History"),
+                          div(class = "card-body",
+                              DTOutput("salesTable"),
+                              hr(),
+                              actionButton("clearSalesHistory", "Clear All Sales", class = "btn btn-danger", icon = icon("trash"))
+                          )
+                      ),
+                      div(class = "card",
+                          div(class = "card-header", "Sales Analytics"),
+                          div(class = "card-body",
+                              tabsetPanel(
+                                tabPanel("Daily", plotlyOutput("dailySalesPlot")),
+                                tabPanel("Weekly", plotlyOutput("weeklySalesPlot")),
+                                tabPanel("Monthly", plotlyOutput("monthlySalesPlot")),
+                                tabPanel("By Category", plotlyOutput("categorySalesPlot"))
+                              )
+                          )
+                      )
+               )
+             )
+    ),
+    
+    # Tab 3: Statistics & Analytics
+    tabPanel("📊 Analytics", icon = icon("chart-bar"),
+             br(),
+             div(class = "card",
+                 div(class = "card-header", "Business Overview"),
+                 div(class = "card-body",
+                     fluidRow(
+                       column(3,
+                              div(class = "stats-box",
+                                  div(class = "stats-label", "Total Revenue"),
+                                  div(class = "stats-value", textOutput("totalRevenueAll")),
+                                  div(class = "stats-label", "All Transactions")
+                              )
+                       ),
+                       column(3,
+                              div(class = "stats-box",
+                                  div(class = "stats-label", "Total Profit"),
+                                  div(class = "stats-value", textOutput("totalProfitAll")),
+                                  div(class = "stats-label", "All Transactions")
+                              )
+                       ),
+                       column(3,
+                              div(class = "stats-box",
+                                  div(class = "stats-label", "Daily Average"),
+                                  div(class = "stats-value", textOutput("dailyAverageProfit")),
+                                  div(class = "stats-label", "Profit per Day")
+                              )
+                       ),
+                       column(3,
+                              div(class = "stats-box",
+                                  div(class = "stats-label", "Profit Margin"),
+                                  div(class = "stats-value", textOutput("profitMarginAll")),
+                                  div(class = "stats-label", "Overall")
+                              )
+                       )
+                     ),
+                     hr(),
+                     fluidRow(
+                       column(12,
+                              selectInput("timeRange", "Time Range:", 
+                                          choices = c("Last 7 Days", "Last 30 Days", "This Month", "Last Month", "This Year", "All Time"),
+                                          selected = "Last 30 Days"
+                              )
+                       )
+                     )
+                 )
+             ),
+             
+             fluidRow(
+               column(6,
+                      div(class = "card",
+                          div(class = "card-header", "Combined Trend Analysis"),
+                          div(class = "card-body",
+                              tabsetPanel(
+                                tabPanel("Daily Trend", 
+                                         plotlyOutput("combinedDailyTrend", height = "350px")
+                                ),
+                                tabPanel("Weekly Trend", 
+                                         plotlyOutput("combinedWeeklyTrend", height = "350px")
+                                ),
+                                tabPanel("Monthly Trend", 
+                                         plotlyOutput("combinedMonthlyTrend", height = "350px")
+                                )
+                              )
+                          )
+                      )
+               ),
+               column(6,
+                      div(class = "card",
+                          div(class = "card-header", "Revenue Distribution"),
+                          div(class = "card-body",
+                              tabsetPanel(
+                                tabPanel("By Business Area", 
+                                         plotlyOutput("businessAreaPie", height = "350px")
+                                ),
+                                tabPanel("By Category", 
+                                         plotlyOutput("categoryPie", height = "350px")
+                                ),
+                                tabPanel("By Transaction Type", 
+                                         plotlyOutput("transactionTypePie", height = "350px")
+                                )
+                              )
+                          )
+                      )
+               )
+             ),
+             fluidRow(
+               column(12,
+                      div(class = "card",
+                          div(class = "card-header", "Key Performance Matrix"),
+                          div(class = "card-body",
+                              tabsetPanel(
+                                tabPanel("Product Performance", 
+                                         plotlyOutput("productPerformance", height = "400px")
+                                ),
+                                tabPanel("Transaction Volume", 
+                                         plotlyOutput("transactionVolume", height = "400px")
+                                ),
+                                tabPanel("Profit Composition", 
+                                         plotlyOutput("profitComposition", height = "400px")
+                                )
+                              )
+                          )
+                      )
+               )
+             ),
+             
+             div(class = "card",
+                 div(class = "card-header", "Export Data"),
+                 div(class = "card-body",
+                     fluidRow(
+                       column(6,
+                              h4("Combined Data Export"),
+                              div(style = "display: flex; gap: 10px; margin-top: 20px;",
+                                  downloadButton("exportAllCSV", "Export All as CSV", class = "btn btn-primary"),
+                                  downloadButton("exportAllExcel", "Export All as Excel", class = "btn btn-primary")
+                              )
+                       ),
+                       column(6,
+                              h4("Filtered Data Export"),
+                              dateRangeInput("exportDateRange", "Date Range:",
+                                             start = Sys.Date() - 30, end = Sys.Date()),
+                              div(style = "display: flex; gap: 10px; margin-top: 20px;",
+                                  downloadButton("exportFilteredCSV", "Export Filtered as CSV", class = "btn btn-primary"),
+                                  downloadButton("exportFilteredExcel", "Export Filtered as Excel", class = "btn btn-primary")
+                              )
+                       )
+                     )
+                 )
+             )
+    ),
+    
+    # Tab 4: Settings
+    tabPanel("⚙️ Settings", icon = icon("cog"),
+             br(),
+             div(class = "settings-section",
+                 h3(class = "settings-title", "System Settings"),
+                 fluidRow(
+                   column(6,
+                          h4("Theme Settings"),
+                          div(style = "margin-bottom: 20px;",
+                              selectInput("themeColor", "Primary Color Theme:",
+                                          choices = c("Brown (Default)" = "brown", 
+                                                      "Blue" = "blue",
+                                                      "Green" = "green",
+                                                      "Purple" = "purple",
+                                                      "Red" = "red"),
+                                          selected = "brown"
+                              ),
+                              checkboxInput("darkMode", "Dark Mode", value = FALSE),
+                              actionButton("applyTheme", "Apply Theme", class = "btn btn-primary")
+                          ),
+                          
+                          h4("Data Management"),
+                          div(style = "margin-bottom: 20px;",
+                              selectInput("backupFrequency", "Auto-Backup Frequency:",
+                                          choices = c("Daily" = "daily", 
+                                                      "Weekly" = "weekly",
+                                                      "Monthly" = "monthly",
+                                                      "Never" = "never"),
+                                          selected = "weekly"
+                              ),
+                              actionButton("backupNow", "Backup Now", class = "btn btn-primary"),
+                              actionButton("restoreBackup", "Restore from Backup", class = "btn btn-warning")
+                          )
+                   ),
+                   column(6,
+                          h4("Display Settings"),
+                          div(style = "margin-bottom: 20px;",
+                              selectInput("dateFormat", "Date Format:",
+                                          choices = c("MM/DD/YYYY" = "%m/%d/%Y", 
+                                                      "DD/MM/YYYY" = "%d/%m/%Y",
+                                                      "YYYY-MM-DD" = "%Y-%m-%d",
+                                                      "Month DD, YYYY" = "%B %d, %Y"),
+                                          selected = "%B %d, %Y"
+                              ),
+                              selectInput("numberFormat", "Number Format:",
+                                          choices = c("1,234.56" = "comma", 
+                                                      "1 234,56" = "space",
+                                                      "1.234,56" = "period"),
+                                          selected = "comma"
+                              )
+                          ),
+                          
+                          h4("Calculator Settings"),
+                          div(style = "margin-bottom: 20px;",
+                              checkboxInput("enableCalc", "Enable Floating Calculator", value = TRUE),
+                              sliderInput("calcOpacity", "Calculator Opacity:", 
+                                          min = 0.5, max = 1, value = 0.9, step = 0.1)
+                          )
+                   )
+                 ),
+                 hr(),
+                 fluidRow(
+                   column(12,
+                          h4("Import/Export System Data"),
+                          div(style = "display: flex; gap: 10px; margin-bottom: 20px;",
+                              actionButton("exportSystemData", "Export All System Data", class = "btn btn-primary"),
+                              actionButton("importSystemData", "Import System Data", class = "btn btn-warning"),
+                              actionButton("resetSystem", "Reset System", class = "btn btn-danger")
+                          ),
+                          tags$small("Note: Exporting system data will create a backup of all transactions, products, and settings.")
+                   )
+                 )
+             ),
+             
+             div(class = "settings-section",
+                 h3(class = "settings-title", "Product Management"),
+                 fluidRow(
+                   column(6,
+                          h4("Add New Product Category"),
+                          div(style = "margin-bottom: 20px;",
+                              textInput("newCategory", "Category Name:", placeholder = "Enter new category name"),
+                              actionButton("addCategory", "Add Category", class = "btn btn-primary")
+                          ),
+                          h4("Manage Existing Categories"),
+                          div(style = "margin-bottom: 20px;",
+                              selectInput("selectCategoryManage", "Select Category:", choices = categories),
+                              actionButton("renameCategory", "Rename", class = "btn btn-primary"),
+                              actionButton("deleteCategory", "Delete", class = "btn btn-danger")
+                          )
+                   ),
+                   column(6,
+                          h4("Bulk Import Products"),
+                          div(style = "margin-bottom: 20px;",
+                              fileInput("importProducts", "Import Products from Excel:",
+                                        accept = c(".xlsx", ".xls")
+                              ),
+                              downloadButton("downloadTemplate", "Download Template", class = "btn btn-primary")
+                          ),
+                          h4("Export Product Catalog"),
+                          div(style = "margin-bottom: 20px;",
+                              downloadButton("exportProducts", "Export All Products", class = "btn btn-primary")
+                          )
+                   )
+                 )
+             )
+    )
+  ),
+  
+  # Floating Calculator
+  div(id = "calculatorToggle", class = "calculator-toggle", icon("calculator")),
+  div(id = "calculatorWidget", class = "calculator-widget",
+      div(class = "calculator-header",
+          span("Calculator"),
+          span(style = "cursor: pointer;", icon("times"), onclick = "document.getElementById('calculatorWidget').classList.remove('show');")
+      ),
+      div(class = "calculator-body",
+          tags$input(type = "text", class = "calculator-display", readonly = TRUE),
+          div(class = "calculator-keys",
+              div(class = "calculator-key clear", "C"),
+              div(class = "calculator-key number", "7"),
+              div(class = "calculator-key number", "8"),
+              div(class = "calculator-key number", "9"),
+              div(class = "calculator-key operator", "/"),
+              div(class = "calculator-key number", "4"),
+              div(class = "calculator-key number", "5"),
+              div(class = "calculator-key number", "6"),
+              div(class = "calculator-key operator", "*"),
+              div(class = "calculator-key number", "1"),
+              div(class = "calculator-key number", "2"),
+              div(class = "calculator-key number", "3"),
+              div(class = "calculator-key operator", "-"),
+              div(class = "calculator-key number", "0"),
+              div(class = "calculator-key number", "."),
+              div(class = "calculator-key equal", "="),
+              div(class = "calculator-key operator", "+")
+          )
+      )
+  )
+)
+
+# Server logic
+server <- function(input, output, session) {
+  
+  # Create reactive value for transaction data
+  transaction_data <- reactiveVal(read.csv(data_file, stringsAsFactors = FALSE))
+  
+  # Create reactive values for undo/redo functionality
+  transaction_history <- reactiveVal(list())
+  transaction_future <- reactiveVal(list())
+  
+  # Initialize history
+  observe({
+    if (length(transaction_history()) == 0) {
+      history <- transaction_history()
+      history[[1]] <- transaction_data()
+      transaction_history(history)
+    }
+  })
+  
+  # Add transaction
+  observeEvent(input$submit, {
+    # Validate inputs
+    if (input$customer_name == "" || input$mobile == "" || input$totalamount <= 0) {
+      showNotification("Please fill in all fields with valid values.", type = "error")
+      return()
+    }
+    
+    # Validate mobile number (11 digits for Philippines)
+    if (nchar(input$mobile) != 11 || !grepl("^[0-9]+$", input$mobile)) {
+      showNotification("Mobile number must be 11 digits.", type = "error")
+      return()
+    }
+    
+    # Calculate profit based on transaction type
+    profit <- 0
+    if (input$type == "Load") {
+      profit <- input$totalamount * 0.05 # 5% profit for load
+    } else if (input$type == "GCash-In" || input$type == "GCash-Out") {
+      profit <- input$totalamount * 0.02 # 2% profit for GCash transactions
+    }
+    
+    # Create new transaction record
+    new_row <- data.frame(
+      Date = as.character(Sys.Date()),
+      Customer_Name = input$customer_name,
+      Mobile_Number = input$mobile,
+      Type = input$type,
+      Total_Amount = input$totalamount,
+      Profit = profit,
+      stringsAsFactors = FALSE
+    )
+    
+    # Add to data
+    updated_data <- rbind(transaction_data(), new_row)
+    
+    # Save history for undo/redo
+    history <- transaction_history()
+    history[[length(history) + 1]] <- updated_data
+    transaction_history(history)
+    transaction_future(list()) # Clear future for new action
+    
+    # Update reactiveVal
+    transaction_data(updated_data)
+    
+    # Save to CSV
+    write.csv(updated_data, data_file, row.names = FALSE)
+    
+    # Reset inputs
+    updateTextInput(session, "customer_name", value = "")
+    updateTextInput(session, "mobile", value = "")
+    updateNumericInput(session, "totalamount", value = 0)
+    
+    showNotification("Transaction saved successfully!", type = "success")
+  })
+  
+  # Delete selected row
+  observeEvent(input$deleterow, {
+    if (is.null(input$data_table_rows_selected)) {
+      showNotification("Please select a row to delete.", type = "warning")
+      return()
+    }
+    
+    # Get current data
+    current_data <- transaction_data()
+    
+    if (nrow(current_data) == 0) {
+      showNotification("No data to delete.", type = "warning")
+      return()
+    }
+    
+    # Remove selected row
+    updated_data <- current_data[-input$data_table_rows_selected, ]
+    
+    # Save history for undo/redo
+    history <- transaction_history()
+    history[[length(history) + 1]] <- updated_data
+    transaction_history(history)
+    transaction_future(list()) # Clear future for new action
+    
+    # Update reactiveVal
+    transaction_data(updated_data)
+    
+    # Save to CSV
+    write.csv(updated_data, data_file, row.names = FALSE)
+    
+    showNotification("Selected transaction(s) deleted.", type = "info")
+  })
+  
+  # Clear all history
+  observeEvent(input$clearhistory, {
+    showModal(modalDialog(
+      title = "Confirm Deletion",
+      "Are you sure you want to delete ALL transaction history? This cannot be undone.",
+      footer = tagList(
+        modalButton("Cancel"),
+        actionButton("confirmClearHistory", "Yes, Delete All", class = "btn btn-danger")
+      )
+    ))
+  })
+  
+  observeEvent(input$confirmClearHistory, {
+    # Create empty dataframe with same structure
+    empty_data <- data.frame(
+      Date = as.character(),
+      Customer_Name = character(),
+      Mobile_Number = character(),
+      Type = character(),
+      Total_Amount = numeric(),
+      Profit = numeric(),
+      stringsAsFactors = FALSE
+    )
+    
+    # Save history for undo/redo
+    history <- transaction_history()
+    history[[length(history) + 1]] <- empty_data
+    transaction_history(history)
+    transaction_future(list()) # Clear future for new action
+    
+    # Update reactiveVal
+    transaction_data(empty_data)
+    
+    # Save to CSV
+    write.csv(empty_data, data_file, row.names = FALSE)
+    
+    removeModal()
+    showNotification("All transaction history has been cleared.", type = "info")
+  })
+  
+  # Undo action
+  observeEvent(input$undoBtn, {
+    history <- transaction_history()
+    
+    if (length(history) <= 1) {
+      showNotification("Nothing to undo.", type = "warning")
+      return()
+    }
+    
+    # Get the current state and move to future
+    current <- history[[length(history)]]
+    future <- transaction_future()
+    future[[length(future) + 1]] <- current
+    transaction_future(future)
+    
+    # Remove current state from history
+    history <- history[-length(history)]
+    transaction_history(history)
+    
+    # Set the previous state as current
+    transaction_data(history[[length(history)]])
+    
+    # Save to CSV
+    write.csv(history[[length(history)]], data_file, row.names = FALSE)
+    
+    showNotification("Undo successful.", type = "info")
+  })
+  
+  # Redo action
+  observeEvent(input$redoBtn, {
+    future <- transaction_future()
+    
+    if (length(future) == 0) {
+      showNotification("Nothing to redo.", type = "warning")
+      return()
+    }
+    
+    # Get the future state
+    next_state <- future[[length(future)]]
+    
+    # Add current state to history
+    history <- transaction_history()
+    history[[length(history) + 1]] <- next_state
+    transaction_history(history)
+    
+    # Remove the used future state
+    future <- future[-length(future)]
+    transaction_future(future)
+    
+    # Set the next state as current
+    transaction_data(next_state)
+    
+    # Save to CSV
+    write.csv(next_state, data_file, row.names = FALSE)
+    
+    showNotification("Redo successful.", type = "info")
+  })
+  
+  # Render data table
+  output$data_table <- renderDT({
+    datatable(transaction_data(),
+              options = list(pageLength = 5,
+                             lengthMenu = c(5, 10, 15, 20)),
+              selection = 'single')
+  })
+  
+  # Download transactions
+  output$downloadData <- downloadHandler(
+    filename = function() {
+      paste("transaction_data_", Sys.Date(), ".csv", sep="")
+    },
+    content = function(file) {
+      write.csv(transaction_data(), file, row.names = FALSE)
+    }
+  )
+  
+  # Calculate and render transaction summaries
+  output$total_load_count <- renderText({
+    data <- transaction_data()
+    if (nrow(data) == 0) return("0")
+    
+    sum(data$Type == "Load")
+  })
+  
+  output$total_load_profit <- renderText({
+    data <- transaction_data()
+    if (nrow(data) == 0) return("₱0.00")
+    
+    load_profit <- sum(data$Profit[data$Type == "Load"])
+    paste0("₱", format(load_profit, big.mark = ",", nsmall = 2))
+  })
+  
+  output$total_gcash_count <- renderText({
+    data <- transaction_data()
+    if (nrow(data) == 0) return("0")
+    
+    sum(data$Type %in% c("GCash-In", "GCash-Out"))
+  })
+  
+  output$total_gcash_profit <- renderText({
+    data <- transaction_data()
+    if (nrow(data) == 0) return("₱0.00")
+    
+    gcash_profit <- sum(data$Profit[data$Type %in% c("GCash-In", "GCash-Out")])
+    paste0("₱", format(gcash_profit, big.mark = ",", nsmall = 2))
+  })
+  
+  output$total_transaction_profit <- renderText({
+    data <- transaction_data()
+    if (nrow(data) == 0) return("₱0.00")
+    
+    total_profit <- sum(data$Profit)
+    paste0("₱", format(total_profit, big.mark = ",", nsmall = 2))
+  })
+  
+  # PRODUCT SALES FUNCTIONALITY
+  
+  # Create reactive value for sales data
+  sales_reactive <- reactiveVal(sales_data)
+  
+  # Create reactive values for undo/redo functionality
+  sales_history <- reactiveVal(list())
+  sales_future <- reactiveVal(list())
+  
+  # Initialize sales history
+  observe({
+    if (length(sales_history()) == 0) {
+      history <- sales_history()
+      history[[1]] <- sales_reactive()
+      sales_history(history)
+    }
+  })
+  
+  # Update product dropdown when category changes
+  observeEvent(input$category, {
+    selected_category <- input$category
+    category_products <- product_data[[selected_category]]$`Product Name`
+    updateSelectInput(session, "product", choices = category_products)
+  })
+  
+  # Update product details when product changes
+  observeEvent(input$product, {
+    selected_category <- input$category
+    selected_product <- input$product
+    
+    if (!is.null(selected_product) && selected_product != "" && 
+        !is.null(selected_category) && selected_category != "") {
+      
+      product_index <- which(product_data[[selected_category]]$`Product Name` == selected_product)
+      
+      if (length(product_index) > 0) {
+        unit_cost <- product_data[[selected_category]]$`Unit Cost (PHP)`[product_index]
+        unit_price <- product_data[[selected_category]]$`Unit Price (PHP)`[product_index]
+        
+        updateNumericInput(session, "unitCost", value = unit_cost)
+        updateNumericInput(session, "unitPrice", value = unit_price)
+      }
+    }
+  })
+  
+  # Calculate and display cost, revenue, and profit
+  output$totalCost <- renderText({
+    cost <- input$quantity * input$unitCost
+    paste0("₱", format(cost, big.mark = ",", nsmall = 2))
+  })
+  
+  output$totalRevenue <- renderText({
+    revenue <- input$quantity * input$unitPrice
+    paste0("₱", format(revenue, big.mark = ",", nsmall = 2))
+  })
+  
+  output$profit <- renderText({
+    profit <- (input$unitPrice - input$unitCost) * input$quantity
+    paste0("₱", format(profit, big.mark = ",", nsmall = 2))
+  })
+  
+  # Save sale transaction
+  observeEvent(input$saveSale, {
+    # Validate inputs
+    if (is.null(input$product) || input$product == "" || 
+        input$quantity <= 0 || input$unitPrice <= 0) {
+      showNotification("Please select a product and set valid quantity and prices.", type = "error")
+      return()
+    }
+    
+    # Calculate amounts
+    total_cost <- input$quantity * input$unitCost
+    total_revenue <- input$quantity * input$unitPrice
+    profit <- total_revenue - total_cost
+    
+    # Create new sale record
+    new_sale <- data.frame(
+      Date = as.character(input$dateInput),
+      Category = input$category,
+      Product = input$product,
+      Quantity = input$quantity,
+      `Unit Cost` = input$unitCost,
+      `Unit Price` = input$unitPrice,
+      `Total Cost` = total_cost,
+      `Total Revenue` = total_revenue,
+      Profit = profit,
+      stringsAsFactors = FALSE
+    )
+    
+    # Add to data
+    updated_sales <- rbind(sales_reactive(), new_sale)
+    
+    # Save history for undo/redo
+    history <- sales_history()
+    history[[length(history) + 1]] <- updated_sales
+    sales_history(history)
+    sales_future(list()) # Clear future for new action
+    
+    # Update reactiveVal
+    sales_reactive(updated_sales)
+    
+    # Save to CSV
+    write.csv(updated_sales, sales_file, row.names = FALSE)
+    
+    # Reset quantity
+    updateNumericInput(session, "quantity", value = 1)
+    
+    showNotification("Sale recorded successfully!", type = "success")
+  })
+  
+  # Delete selected sale
+  observeEvent(input$deleteSale, {
+    if (is.null(input$salesTable_rows_selected)) {
+      showNotification("Please select a row to delete.", type = "warning")
+      return()
+    }
+    
+    # Get current data
+    current_data <- sales_reactive()
+    
+    if (nrow(current_data) == 0) {
+      showNotification("No data to delete.", type = "warning")
+      return()
+    }
+    
+    # Remove selected row
+    updated_data <- current_data[-input$salesTable_rows_selected, ]
+    
+    # Save history for undo/redo
+    history <- sales_history()
+    history[[length(history) + 1]] <- updated_data
+    sales_history(history)
+    sales_future(list()) # Clear future for new action
+    
+    # Update reactiveVal
+    sales_reactive(updated_data)
+    
+    # Save to CSV
+    write.csv(updated_data, sales_file, row.names = FALSE)
+    
+    showNotification("Selected sale deleted.", type = "info")
+  })
+  
+  # Clear all sales
+  observeEvent(input$clearSalesHistory, {
+    showModal(modalDialog(
+      title = "Confirm Deletion",
+      "Are you sure you want to delete ALL sales history? This cannot be undone.",
+      footer = tagList(
+        modalButton("Cancel"),
+        actionButton("confirmClearSales", "Yes, Delete All", class = "btn btn-danger")
+      )
+    ))
+  })
+  
+  observeEvent(input$confirmClearSales, {
+    # Create empty dataframe with same structure
+    empty_data <- data.frame(
+      Date = as.character(),
+      Category = character(),
+      Product = character(),
+      Quantity = numeric(),
+      `Unit Cost` = numeric(),
+      `Unit Price` = numeric(),
+      `Total Cost` = numeric(),
+      `Total Revenue` = numeric(),
+      Profit = numeric(),
+      stringsAsFactors = FALSE
+    )
+    
+    # Save history for undo/redo
+    history <- sales_history()
+    history[[length(history) + 1]] <- empty_data
+    sales_history(history)
+    sales_future(list()) # Clear future for new action
+    
+    # Update reactiveVal
+    sales_reactive(empty_data)
+    
+    # Save to CSV
+    write.csv(empty_data, sales_file, row.names = FALSE)
+    
+    removeModal()
+    showNotification("All sales history has been cleared.", type = "info")
+  })
+  
+  # Undo sale action
+  observeEvent(input$undoSaleBtn, {
+    history <- sales_history()
+    
+    if (length(history) <= 1) {
+      showNotification("Nothing to undo.", type = "warning")
+      return()
+    }
+    
+    # Get the current state and move to future
+    current <- history[[length(history)]]
+    future <- sales_future()
+    future[[length(future) + 1]] <- current
+    sales_future(future)
+    
+    # Remove current state from history
+    history <- history[-length(history)]
+    sales_history(history)
+    
+    # Set the previous state as current
+    sales_reactive(history[[length(history)]])
+    
+    # Save to CSV
+    write.csv(history[[length(history)]], sales_file, row.names = FALSE)
+    
+    showNotification("Undo successful.", type = "info")
+  })
+  
+  # Redo sale action
+  observeEvent(input$redoSaleBtn, {
+    future <- sales_future()
+    
+    if (length(future) == 0) {
+      showNotification("Nothing to redo.", type = "warning")
+      return()
+    }
+    
+    # Get the future state
+    next_state <- future[[length(future)]]
+    
+    # Add current state to history
+    history <- sales_history()
+    history[[length(history) + 1]] <- next_state
+    sales_history(history)
+    
+    # Remove the used future state
+    future <- future[-length(future)]
+    sales_future(future)
+    
+    # Set the next state as current
+    sales_reactive(next_state)
+    
+    # Save to CSV
+    write.csv(next_state, sales_file, row.names = FALSE)
+    
+    showNotification("Redo successful.", type = "info")
+  })
+  
+  # Render sales table
+  output$salesTable <- renderDT({
+    datatable(sales_reactive(),
+              options = list(pageLength = 5,
+                             lengthMenu = c(5, 10, 15, 20)),
+              selection = 'single')
+  })
+  
+  # Download sales as Excel
+  output$downloadExcel <- downloadHandler(
+    filename = function() {
+      paste("sales_data_", Sys.Date(), ".xlsx", sep="")
+    },
+    content = function(file) {
+      write_xlsx(sales_reactive(), file)
+    }
+  )
+  
+  # Download sales as CSV
+  output$downloadCSV <- downloadHandler(
+    filename = function() {
+      paste("sales_data_", Sys.Date(), ".csv", sep="")
+    },
+    content = function(file) {
+      write.csv(sales_reactive(), file, row.names = FALSE)
+    }
+  )
+  
+  # Sales Analytics Plots
+  
+  # Daily Sales Plot
+  output$dailySalesPlot <- renderPlotly({
+    data <- sales_reactive()
+    
+    if (nrow(data) == 0) {
+      return(plot_ly() %>% 
+               layout(title = "No sales data available",
+                      xaxis = list(title = ""),
+                      yaxis = list(title = "")))
+    }
+    
+    # Convert date strings to Date objects
+    data$Date <- as.Date(data$Date)
+    
+    # Group by date and calculate daily totals
+    daily_data <- data %>%
+      group_by(Date) %>%
+      summarize(Revenue = sum(`Total Revenue`),
+                Cost = sum(`Total Cost`),
+                Profit = sum(Profit))
+    
+    # Plotting
+    plot_ly() %>%
+      add_trace(data = daily_data, x = ~Date, y = ~Revenue, type = 'scatter', mode = 'lines+markers', 
+                name = 'Revenue', line = list(color = '#8B4513', width = 2),
+                marker = list(color = '#8B4513', size = 8)) %>%
+      add_trace(data = daily_data, x = ~Date, y = ~Cost, type = 'scatter', mode = 'lines+markers', 
+                name = 'Cost', line = list(color = '#A52A2A', width = 2, dash = 'dash'),
+                marker = list(color = '#A52A2A', size = 8)) %>%
+      add_trace(data = daily_data, x = ~Date, y = ~Profit, type = 'scatter', mode = 'lines+markers', 
+                name = 'Profit', line = list(color = '#D2691E', width = 3),
+                marker = list(color = '#D2691E', size = 10)) %>%
+      layout(title = "Daily Sales Analysis",
+             xaxis = list(title = "Date"),
+             yaxis = list(title = "Amount (PHP)"),
+             hovermode = "x unified",
+             legend = list(orientation = 'h', y = -0.2))
+  })
+  
+  # Weekly Sales Plot
+  output$weeklySalesPlot <- renderPlotly({
+    data <- sales_reactive()
+    
+    if (nrow(data) == 0) {
+      return(plot_ly() %>% 
+               layout(title = "No sales data available",
+                      xaxis = list(title = ""),
+                      yaxis = list(title = "")))
+    }
+    
+    # Convert date strings to Date objects
+    data$Date <- as.Date(data$Date)
+    
+    # Add week information
+    data$Week <- format(data$Date, "%Y-W%V")
+    
+    # Group by week and calculate weekly totals
+    weekly_data <- data %>%
+      group_by(Week) %>%
+      summarize(Revenue = sum(`Total Revenue`),
+                Cost = sum(`Total Cost`),
+                Profit = sum(Profit))
+    
+    # Plotting
+    plot_ly() %>%
+      add_bars(data = weekly_data, x = ~Week, y = ~Revenue, name = 'Revenue', 
+               marker = list(color = '#8B4513')) %>%
+      add_bars(data = weekly_data, x = ~Week, y = ~Cost, name = 'Cost', 
+               marker = list(color = '#A52A2A')) %>%
+      add_bars(data = weekly_data, x = ~Week, y = ~Profit, name = 'Profit',
+               marker = list(color = '#D2691E')) %>%
+      layout(title = "Weekly Sales Breakdown",
+             xaxis = list(title = "Week"),
+             yaxis = list(title = "Amount (PHP)"),
+             barmode = 'group',
+             legend = list(orientation = 'h', y = -0.2))
+  })
+  
+  # Monthly Sales Plot
+  output$monthlySalesPlot <- renderPlotly({
+    data <- sales_reactive()
+    
+    if (nrow(data) == 0) {
+      return(plot_ly() %>% 
+               layout(title = "No sales data available",
+                      xaxis = list(title = ""),
+                      yaxis = list(title = "")))
+    }
+    
+    # Convert date strings to Date objects
+    data$Date <- as.Date(data$Date)
+    
+    # Add month information
+    data$Month <- format(data$Date, "%Y-%m")
+    
+    # Group by month and calculate monthly totals
+    monthly_data <- data %>%
+      group_by(Month) %>%
+      summarize(Revenue = sum(`Total Revenue`),
+                Cost = sum(`Total Cost`),
+                Profit = sum(Profit))
+    
+    # Plotting
+    plot_ly() %>%
+      add_trace(data = monthly_data, x = ~Month, y = ~Revenue, type = 'scatter', mode = 'lines+markers', 
+                name = 'Revenue', line = list(color = '#8B4513', width = 2),
+                marker = list(color = '#8B4513', size = 10)) %>%
+      add_trace(data = monthly_data, x = ~Month, y = ~Cost, type = 'scatter', mode = 'lines+markers', 
+                name = 'Cost', line = list(color = '#A52A2A', width = 2, dash = 'dash'),
+                marker = list(color = '#A52A2A', size = 8)) %>%
+      add_trace(data = monthly_data, x = ~Month, y = ~Profit, type = 'bar', 
+                name = 'Profit', marker = list(color = '#D2691E')) %>%
+      layout(title = "Monthly Sales Analysis",
+             xaxis = list(title = "Month"),
+             yaxis = list(title = "Amount (PHP)"),
+             hovermode = "x unified",
+             legend = list(orientation = 'h', y = -0.2))
+  })
+  
+  # Category Sales Plot
+  output$categorySalesPlot <- renderPlotly({
+    data <- sales_reactive()
+    
+    if (nrow(data) == 0) {
+      return(plot_ly() %>% 
+               layout(title = "No sales data available",
+                      xaxis = list(title = ""),
+                      yaxis = list(title = "")))
+    }
+    
+    # Group by category and calculate totals
+    category_data <- data %>%
+      group_by(Category) %>%
+      summarize(Revenue = sum(`Total Revenue`),
+                Cost = sum(`Total Cost`),
+                Profit = sum(Profit))
+    
+    # Plotting
+    plot_ly() %>%
+      add_pie(data = category_data, labels = ~Category, values = ~Revenue, 
+              name = 'Revenue by Category',
+              domain = list(row = 0, column = 0),
+              marker = list(colors = brewer.pal(length(unique(data$Category)), "Set3")),
+              title = "Revenue") %>%
+      add_pie(data = category_data, labels = ~Category, values = ~Profit, 
+              name = 'Profit by Category',
+              domain = list(row = 0, column = 1),
+              marker = list(colors = brewer.pal(length(unique(data$Category)), "Set3")),
+              title = "Profit") %>%
+      layout(title = "Sales by Product Category",
+             grid = list(rows = 1, columns = 2),
+             showlegend = TRUE)
+  })
+  
+  # ANALYTICS FUNCTIONALITY
+  
+  # Total revenue across all transactions
+  output$totalRevenueAll <- renderText({
+    # Combine load/gcash revenue with product sales
+    load_gcash_data <- transaction_data()
+    load_gcash_revenue <- sum(load_gcash_data$Total_Amount)
+    
+    product_data <- sales_reactive()
+    product_revenue <- sum(product_data$`Total Revenue`)
+    
+    total_revenue <- load_gcash_revenue + product_revenue
+    paste0("₱", format(total_revenue, big.mark = ",", nsmall = 2))
+  })
+  
+  # Total profit across all transactions
+  output$totalProfitAll <- renderText({
+    # Combine load/gcash profit with product profit
+    load_gcash_data <- transaction_data()
+    load_gcash_profit <- sum(load_gcash_data$Profit)
+    
+    product_data <- sales_reactive()
+    product_profit <- sum(product_data$Profit)
+    
+    total_profit <- load_gcash_profit + product_profit
+    paste0("₱", format(total_profit, big.mark = ",", nsmall = 2))
+  })
+  
+  # Daily average profit
+  output$dailyAverageProfit <- renderText({
+    # Get unique dates from both datasets
+    load_gcash_data <- transaction_data()
+    load_gcash_dates <- as.Date(unique(load_gcash_data$Date))
+    
+    product_data <- sales_reactive()
+    product_data$Date <- as.Date(product_data$Date)
+    product_dates <- unique(product_data$Date)
+    
+    all_dates <- unique(c(load_gcash_dates, product_dates))
+    
+    # Calculate total profit
+    load_gcash_profit <- sum(load_gcash_data$Profit)
+    product_profit <- sum(product_data$Profit)
+    total_profit <- load_gcash_profit + product_profit
+    
+    # Calculate average profit per day
+    days_count <- max(1, length(all_dates)) # Avoid division by zero
+    daily_avg <- total_profit / days_count
+    
+    paste0("₱", format(daily_avg, big.mark = ",", nsmall = 2))
+  })
+  
+  # Overall profit margin
+  output$profitMarginAll <- renderText({
+    # Calculate total revenue and profit
+    load_gcash_data <- transaction_data()
+    load_gcash_revenue <- sum(load_gcash_data$Total_Amount)
+    load_gcash_profit <- sum(load_gcash_data$Profit)
+    
+    product_data <- sales_reactive()
+    product_revenue <- sum(product_data$`Total Revenue`)
+    product_profit <- sum(product_data$Profit)
+    
+    total_revenue <- load_gcash_revenue + product_revenue
+    total_profit <- load_gcash_profit + product_profit
+    
+    # Calculate profit margin
+    if (total_revenue > 0) {
+      profit_margin <- (total_profit / total_revenue) * 100
+      paste0(format(profit_margin, nsmall = 2), "%")
+    } else {
+      "0.00%"
+    }
+  })
+  
+  # Combined daily trend plot
+  output$combinedDailyTrend <- renderPlotly({
+    # Get data from both data sources
+    load_gcash_data <- transaction_data()
+    product_data <- sales_reactive()
+    
+    if (nrow(load_gcash_data) == 0 && nrow(product_data) == 0) {
+      return(plot_ly() %>% 
+               layout(title = "No data available",
+                      xaxis = list(title = ""),
+                      yaxis = list(title = "")))
+    }
+    
+    # Process load/gcash data
+    load_gcash_data$Date <- as.Date(load_gcash_data$Date)
+    
+    # Process product data
+    product_data$Date <- as.Date(product_data$Date)
+    
+    # Group load/gcash data by date
+    load_gcash_daily <- load_gcash_data %>%
+      group_by(Date) %>%
+      summarize(Profit = sum(Profit),
+                Type = "Load & GCash")
+    
+    # Group product data by date
+    product_daily <- product_data %>%
+      group_by(Date) %>%
+      summarize(Profit = sum(Profit),
+                Type = "Product Sales")
+    
+    # Combine both datasets
+    combined_data <- rbind(load_gcash_daily, product_daily)
+    
+    # Plot combined data
+    plot_ly() %>%
+      add_trace(data = combined_data, x = ~Date, y = ~Profit, color = ~Type,
+                type = 'scatter', mode = 'lines+markers',
+                colors = c("Load & GCash" = "#A52A2A", "Product Sales" = "#8B4513")) %>%
+      layout(title = "Daily Profit by Business Area",
+             xaxis = list(title = "Date"),
+             yaxis = list(title = "Profit (PHP)"),
+             hovermode = "x unified")
+  })
+  
+  # Combined weekly trend plot
+  output$combinedWeeklyTrend <- renderPlotly({
+    # Get data from both data sources
+    load_gcash_data <- transaction_data()
+    product_data <- sales_reactive()
+    
+    if (nrow(load_gcash_data) == 0 && nrow(product_data) == 0) {
+      return(plot_ly() %>% 
+               layout(title = "No data available",
+                      xaxis = list(title = ""),
+                      yaxis = list(title = "")))
+    }
+    
+    # Process load/gcash data
+    load_gcash_data$Date <- as.Date(load_gcash_data$Date)
+    load_gcash_data$Week <- format(load_gcash_data$Date, "%Y-W%V")
+    
+    # Process product data
+    product_data$Date <- as.Date(product_data$Date)
+    product_data$Week <- format(product_data$Date, "%Y-W%V")
+    
+    # Group load/gcash data by week
+    load_gcash_weekly <- load_gcash_data %>%
+      group_by(Week) %>%
+      summarize(Profit = sum(Profit),
+                Type = "Load & GCash")
+    
+    # Group product data by week
+    product_weekly <- product_data %>%
+      group_by(Week) %>%
+      summarize(Profit = sum(Profit),
+                Type = "Product Sales")
+    
+    # Combine both datasets
+    combined_data <- rbind(load_gcash_weekly, product_weekly)
+    
+    # Plot combined data
+    plot_ly() %>%
+      add_bars(data = combined_data, x = ~Week, y = ~Profit, color = ~Type,
+               colors = c("Load & GCash" = "#A52A2A", "Product Sales" = "#8B4513")) %>%
+      layout(title = "Weekly Profit by Business Area",
+             xaxis = list(title = "Week"),
+             yaxis = list(title = "Profit (PHP)"),
+             barmode = 'group')
+  })
+  
+  # Combined monthly trend plot
+  output$combinedMonthlyTrend <- renderPlotly({
+    # Get data from both data sources
+    load_gcash_data <- transaction_data()
+    product_data <- sales_reactive()
+    
+    if (nrow(load_gcash_data) == 0 && nrow(product_data) == 0) {
+      return(plot_ly() %>% 
+               layout(title = "No data available",
+                      xaxis = list(title = ""),
+                      yaxis = list(title = "")))
+    }
+    
+    # Process load/gcash data
+    load_gcash_data$Date <- as.Date(load_gcash_data$Date)
+    load_gcash_data$Month <- format(load_gcash_data$Date, "%Y-%m")
+    
+    # Process product data
+    product_data$Date <- as.Date(product_data$Date)
+    product_data$Month <- format(product_data$Date, "%Y-%m")
+    
+    # Group load/gcash data by month
+    load_gcash_monthly <- load_gcash_data %>%
+      group_by(Month) %>%
+      summarize(Profit = sum(Profit),
+                Type = "Load & GCash")
+    
+    # Group product data by month
+    product_monthly <- product_data %>%
+      group_by(Month) %>%
+      summarize(Profit = sum(Profit),
+                Type = "Product Sales")
+    
+    # Combine both datasets
+    combined_data <- rbind(load_gcash_monthly, product_monthly)
+    
+    # Plot combined data
+    plot_ly() %>%
+      add_trace(data = combined_data, x = ~Month, y = ~Profit, color = ~Type,
+                type = 'scatter', mode = 'lines+markers',
+                colors = c("Load & GCash" = "#A52A2A", "Product Sales" = "#8B4513")) %>%
+      layout(title = "Monthly Profit Trends",
+             xaxis = list(title = "Month"),
+             yaxis = list(title = "Profit (PHP)"),
+             hovermode = "x unified")
+  })
+  
+  # Business area pie chart
+  output$businessAreaPie <- renderPlotly({
+    # Get data from both data sources
+    load_gcash_data <- transaction_data()
+    product_data <- sales_reactive()
+    
+    if (nrow(load_gcash_data) == 0 && nrow(product_data) == 0) {
+      return(plot_ly() %>% 
+               layout(title = "No data available",
+                      xaxis = list(title = ""),
+                      yaxis = list(title = "")))
+    }
+    
+    # Calculate total revenue for each business area
+    load_revenue <- sum(load_gcash_data$Total_Amount[load_gcash_data$Type == "Load"])
+    gcash_revenue <- sum(load_gcash_data$Total_Amount[load_gcash_data$Type %in% c("GCash-In", "GCash-Out")])
+    product_revenue <- sum(product_data$`Total Revenue`)
+    
+    # Create data frame for pie chart
+    area_data <- data.frame(
+      Business_Area = c("Load", "GCash", "Product Sales"),
+      Revenue = c(load_revenue, gcash_revenue, product_revenue)
+    )
+    
+    # Filter out zero values
+    area_data <- area_data[area_data$Revenue > 0, ]
+    
+    if (nrow(area_data) == 0) {
+      return(plot_ly() %>% 
+               layout(title = "No revenue data available",
+                      xaxis = list(title = ""),
+                      yaxis = list(title = "")))
+    }
+    
+    # Create pie chart
+    plot_ly(area_data, labels = ~Business_Area, values = ~Revenue, type = 'pie',
+            textinfo = 'label+percent',
+            insidetextorientation = 'radial',
+            marker = list(colors = c("#A52A2A", "#8B4513", "#D2691E"))) %>%
+      layout(title = "Revenue Distribution by Business Area")
+  })
+  
+  # Category pie chart
+  output$categoryPie <- renderPlotly({
+    # Get product data
+    product_data <- sales_reactive()
+    
+    if (nrow(product_data) == 0) {
+      return(plot_ly() %>% 
+               layout(title = "No product data available",
+                      xaxis = list(title = ""),
+                      yaxis = list(title = "")))
+    }
+    
+    # Group by category
+    category_data <- product_data %>%
+      group_by(Category) %>%
+      summarize(Revenue = sum(`Total Revenue`))
+    
+    # Create pie chart
+    plot_ly(category_data, labels = ~Category, values = ~Revenue, type = 'pie',
+            textinfo = 'label+percent',
+            insidetextorientation = 'radial',
+            marker = list(colors = brewer.pal(min(9, max(3, nrow(category_data))), "Set3"))) %>%
+      layout(title = "Revenue Distribution by Product Category")
+  })
+  
+  # Transaction type pie chart
+  output$transactionTypePie <- renderPlotly({
+    # Get load/gcash data
+    load_gcash_data <- transaction_data()
+    
+    if (nrow(load_gcash_data) == 0) {
+      return(plot_ly() %>% 
+               layout(title = "No transaction data available",
+                      xaxis = list(title = ""),
+                      yaxis = list(title = "")))
+    }
+    
+    # Group by transaction type
+    type_data <- load_gcash_data %>%
+      group_by(Type) %>%
+      summarize(Revenue = sum(Total_Amount))
+    
+    # Create pie chart
+    plot_ly(type_data, labels = ~Type, values = ~Revenue, type = 'pie',
+            textinfo = 'label+percent',
+            insidetextorientation = 'radial',
+            marker = list(colors = c("#8B4513", "#A52A2A", "#D2691E"))) %>%
+      layout(title = "Revenue Distribution by Transaction Type")
+  })
+  
+  # Product performance chart
+  output$productPerformance <- renderPlotly({
+    # Get product data
+    product_data <- sales_reactive()
+    
+    if (nrow(product_data) == 0) {
+      return(plot_ly() %>% 
+               layout(title = "No product data available",
+                      xaxis = list(title = ""),
+                      yaxis = list(title = "")))
+    }
+    
+    # Group by product
+    product_performance <- product_data %>%
+      group_by(Product, Category) %>%
+      summarize(Revenue = sum(`Total Revenue`),
+                Profit = sum(Profit),
+                Quantity = sum(Quantity)) %>%
+      arrange(desc(Profit))
+    
+    # Limit to top 15 products for readability
+    top_products <- head(product_performance, 15)
+    
+    # Create horizontal bar chart
+    plot_ly() %>%
+      add_bars(data = top_products, y = ~Product, x = ~Profit, orientation = 'h',
+               name = 'Profit', marker = list(color = '#D2691E'),
+               text = ~paste('Category:', Category, '<br>Profit: ₱', format(Profit, big.mark = ",", nsmall = 2),
+                             '<br>Revenue: ₱', format(Revenue, big.mark = ",", nsmall = 2),
+                             '<br>Quantity:', Quantity),
+               hoverinfo = 'text') %>%
+      layout(title = "Top 15 Products by Profit",
+             xaxis = list(title = "Profit (PHP)"),
+             yaxis = list(title = "", autorange = "reversed"))
+  })
+  
+  # Transaction volume chart
+  output$transactionVolume <- renderPlotly({
+    # Get data from both data sources
+    load_gcash_data <- transaction_data()
+    product_data <- sales_reactive()
+    
+    if (nrow(load_gcash_data) == 0 && nrow(product_data) == 0) {
+      return(plot_ly() %>% 
+               layout(title = "No data available",
+                      xaxis = list(title = ""),
+                      yaxis = list(title = "")))
+    }
+    
+    # Process load/gcash data
+    load_gcash_data$Date <- as.Date(load_gcash_data$Date)
+    load_gcash_data$Month <- format(load_gcash_data$Date, "%Y-%m")
+    
+    # Process product data
+    product_data$Date <- as.Date(product_data$Date)
+    product_data$Month <- format(product_data$Date, "%Y-%m")
+    
+    # Count transactions by month for load/gcash
+    load_gcash_counts <- load_gcash_data %>%
+      group_by(Month, Type) %>%
+      summarize(Count = n())
+    
+    # Count transactions by month for products
+    product_counts <- product_data %>%
+      group_by(Month) %>%
+      summarize(Count = n(),
+                Type = "Product Sales")
+    
+    # Combine the data
+    all_counts <- rbind(load_gcash_counts, product_counts)
+    
+    # Create bar chart
+    plot_ly(all_counts, x = ~Month, y = ~Count, color = ~Type, type = 'bar',
+            colors = c("Load" = "#8B4513", "GCash-In" = "#A52A2A", "GCash-Out" = "#CD853F", "Product Sales" = "#D2691E")) %>%
+      layout(title = "Monthly Transaction Volume",
+             xaxis = list(title = "Month"),
+             yaxis = list(title = "Number of Transactions"),
+             barmode = 'stack')
+  })
+  
+  # Profit composition chart
+  output$profitComposition <- renderPlotly({
+    # Get data from both data sources
+    load_gcash_data <- transaction_data()
+    product_data <- sales_reactive()
+    
+    if (nrow(load_gcash_data) == 0 && nrow(product_data) == 0) {
+      return(plot_ly() %>% 
+               layout(title = "No data available",
+                      xaxis = list(title = ""),
+                      yaxis = list(title = "")))
+    }
+    
+    # Process load/gcash data
+    load_gcash_data$Date <- as.Date(load_gcash_data$Date)
+    load_gcash_data$Month <- format(load_gcash_data$Date, "%Y-%m")
+    
+    # Process product data
+    product_data$Date <- as.Date(product_data$Date)
+    product_data$Month <- format(product_data$Date, "%Y-%m")
+    
+    # Calculate profit by month for load
+    load_profit <- load_gcash_data %>%
+      filter(Type == "Load") %>%
+      group_by(Month) %>%
+      summarize(Profit = sum(Profit),
+                Business = "Load")
+    
+    # Calculate profit by month for gcash
+    gcash_profit <- load_gcash_data %>%
+      filter(Type %in% c("GCash-In", "GCash-Out")) %>%
+      group_by(Month) %>%
+      summarize(Profit = sum(Profit),
+                Business = "GCash")
+    
+    # Calculate profit by month for products
+    product_profit <- product_data %>%
+      group_by(Month) %>%
+      summarize(Profit = sum(Profit),
+                Business = "Product Sales")
+    
+    # Combine all data
+    all_profit <- rbind(load_profit, gcash_profit, product_profit)
+    
+    # Create area chart
+    plot_ly(all_profit, x = ~Month, y = ~Profit, color = ~Business, type = 'scatter', mode = 'none', fill = 'tonexty',
+            colors = c("Load" = "#8B4513", "GCash" = "#A52A2A", "Product Sales" = "#D2691E")) %>%
+      layout(title = "Monthly Profit Composition",
+             xaxis = list(title = "Month"),
+             yaxis = list(title = "Profit (PHP)"))
+  })
+  
+  # Export functionality
+  
+  # Export all data as CSV
+  output$exportAllCSV <- downloadHandler(
+    filename = function() {
+      paste("sari_sari_all_data_", Sys.Date(), ".csv", sep="")
+    },
+    content = function(file) {
+      # Combine load/gcash data with product data
+      load_gcash_data <- transaction_data()
+      product_data <- sales_reactive()
+      
+      # Add a column to identify the data source
+      load_gcash_data$Data_Source <- "Load_GCash"
+      product_data$Data_Source <- "Product_Sales"
+      
+      # Write to file
+      write.csv(rbind(load_gcash_data, product_data), file, row.names = FALSE)
+    }
+  )
+  
+  # Export all data as Excel
+  output$exportAllExcel <- downloadHandler(
+    filename = function() {
+      paste("sari_sari_all_data_", Sys.Date(), ".xlsx", sep="")
+    },
+    content = function(file) {
+      # Combine load/gcash data with product data
+      load_gcash_data <- transaction_data()
+      product_data <- sales_reactive()
+      
+      # Create a list of data frames for the Excel file
+      data_list <- list(
+        "Load_GCash_Transactions" = load_gcash_data,
+        "Product_Sales" = product_data
+      )
+      
+      # Write to Excel file with multiple sheets
+      write_xlsx(data_list, file)
+    }
+  )
+}
+
+# Run the application
+shinyApp(ui = ui, server = server)
