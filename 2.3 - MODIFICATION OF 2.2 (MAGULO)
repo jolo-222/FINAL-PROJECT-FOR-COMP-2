@@ -1,0 +1,1955 @@
+# Load necessary libraries
+library(shiny)
+library(readxl)
+library(writexl)
+library(DT)
+library(ggplot2)
+library(shinyjs)
+library(dplyr)
+library(plotly)
+library(bslib)
+library(htmltools)
+library(shinyWidgets)
+library(shinythemes)
+library(lubridate)
+library(scales)
+library(tidyr)
+library(RColorBrewer)
+
+# Initialize global variables and load data
+options(scipen = 999) # Prevent scientific notation
+
+# Initialize transaction data
+data_file <- "transactions.csv"
+if (!file.exists(data_file)) {
+  write.csv(data.frame(
+    Date = as.Date(character()),
+    Customer_Name = character(),
+    Mobile_Number = character(),
+    Type = character(),
+    Total_Amount = numeric(),
+    Profit = numeric(),
+    stringsAsFactors = FALSE
+  ), data_file, row.names = FALSE)
+}
+
+# Initialize product data
+excel_file <- "STORE_JAVIER.xlsx" 
+if (file.exists(excel_file)) {
+  sheet_names <- excel_sheets(excel_file)
+  product_data <- lapply(sheet_names, function(sheet) read_excel(excel_file, sheet = sheet))
+  names(product_data) <- sheet_names
+} else {
+  # Provide demo data if file doesn't exist
+  sheet_names <- c("Beverages", "Snacks", "Personal Care", "Others")
+  product_data <- lapply(1:length(sheet_names), function(i) {
+    data.frame(
+      `Product Name` = paste("Product", 1:5), 
+      `Unit Cost (PHP)` = sample(10:50, 5),
+      `Unit Price (PHP)` = sample(50:100, 5),
+      stringsAsFactors = FALSE
+    )
+  })
+  names(product_data) <- sheet_names
+}
+
+# Add "J. Others" category if it doesn't exist
+if (!"J. Others" %in% sheet_names) {
+  sheet_names <- c(sheet_names, "J. Others")
+  product_data[["J. Others"]] <- data.frame(
+    `Product Name` = c("Custom Item"),
+    `Unit Cost (PHP)` = c(0),
+    `Unit Price (PHP)` = c(0),
+    stringsAsFactors = FALSE
+  )
+}
+
+# Remove the LETTERS formatting completely
+categories <- setNames(sheet_names, sheet_names)
+
+# Initialize sales data
+saveDataPath <- "sales_data.rds"
+if (file.exists(saveDataPath)) {
+  sales_data <- readRDS(saveDataPath)
+} else {
+  # Initialize reactive sales data if no saved data exists
+  sales_data <- data.frame(
+    Date = as.Date(character()),
+    Category = character(),
+    Product = character(),
+    Quantity = numeric(),
+    Unit_Cost = numeric(),
+    Unit_Price = numeric(),
+    Profit = numeric(),
+    stringsAsFactors = FALSE
+  )
+}
+
+# Custom CSS for styling the entire application
+custom_css <- HTML("
+  :root {
+    --brown-dark: #7B3F00;     /* Dark brown */
+    --brown-medium: #A0522D;   /* Medium brown */
+    --brown-light: #CD853F;    /* Light brown */
+    --brown-lighter: #DEB887;  /* Very light brown */
+    --off-white: #FFF5EB;      /* Light orange as background */
+    --dark-orange: #FF8C00;    /* Dark orange for borders */
+  }
+  
+  body {
+    background-color: #FFF5EB; /* Base color as fallback */
+    animation: backgroundChange 10s steps(3) infinite;
+    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+  }
+
+  @keyframes backgroundChange {
+    0% {
+      background-color: #FFF5EB; /* Very light orange */
+    }
+    33.33% {
+      background-color: #F0E0C6; /* Very light brown */
+    }
+    66.66% {
+      background-color: #F5E8D7; /* Light beige (blend) */
+    }
+    100% {
+      background-color: #FFF5EB; /* Back to very light orange */
+    }
+  }
+  
+  /* Header styling */
+  .header {
+    background: linear-gradient(to right, var(--brown-dark), var(--brown-medium));
+    color: white;
+    padding: 15px 20px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 1000;
+  }
+  
+  .store-name {
+    font-size: 1.8rem;
+    font-weight: bold;
+    letter-spacing: 1px;
+    margin: 0;
+  }
+  
+  .tagline {
+    font-size: 0.9rem;
+    opacity: 0.9;
+  }
+  
+  .main-title {
+    color: var(--brown-dark);
+    font-weight: bold;
+    text-align: center;
+    margin-bottom: 30px;
+    font-size: 2.5rem;
+    letter-spacing: 1px;
+  }
+  
+  .card {
+    border-radius: 10px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);
+    margin-bottom: 20px;
+    background-color: white;
+    overflow: hidden;
+    animation: fadeIn 0.5s ease-in-out;
+  }
+  
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  
+  .card-header {
+    background-color: var(--brown-dark);
+    color: white;
+    font-weight: bold;
+    padding: 12px 20px;
+    border: none;
+    text-transform: uppercase;
+  }
+  
+  .card-body {
+    padding: 20px;
+  }
+  
+  .sidebar-card {
+    background-color: white;
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 20px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+  }
+  
+  .btn-primary {
+    background-color: white !important;
+    border-color: var(--brown-dark) !important;
+    color: var(--brown-dark) !important;
+    border-radius: 5px;
+    padding: 8px 16px;
+    transition: all 0.3s ease;
+    font-weight: bold !important;
+  }
+  
+  .btn-primary:hover {
+    background-color: var(--brown-lighter) !important;
+    border-color: var(--brown-dark) !important;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+  }
+
+  .btn-danger {
+    background-color: #dc3545 !important;
+    border-color: #dc3545 !important;
+    color: white !important;
+  }
+  
+  .btn-danger:hover {
+    background-color: #c82333 !important;
+    border-color: #bd2130 !important;
+  }
+  
+  .btn-warning {
+    background-color: #ffc107 !important;
+    border-color: #ffc107 !important;
+    color: #212529 !important;
+  }
+  
+  .btn-warning:hover {
+    background-color: #e0a800 !important;
+    border-color: #d39e00 !important;
+  }
+  
+  .btn-dark {
+    background-color: #343a40 !important;
+    border-color: #343a40 !important;
+    color: white !important;
+  }
+  
+  .btn-dark:hover {
+    background-color: #23272b !important;
+    border-color: #1d2124 !important;
+  }
+  
+  .selectize-input {
+    background-color: white !important;
+    border: 2px solid var(--dark-orange) !important;
+    border-radius: 5px !important;
+    box-shadow: none !important;
+    transition: all 0.3s ease;
+  }
+  
+  .selectize-input.focus {
+    border-color: var(--brown-dark) !important;
+    box-shadow: 0 0 0 0.2rem rgba(123, 63, 0, 0.25) !important;
+    transform: scale(1.02);
+  }
+  
+  .selectize-dropdown {
+    background-color: white !important;
+    border: 2px solid var(--dark-orange) !important;
+    border-radius: 0 0 5px 5px !important;
+  }
+  
+  .selectize-dropdown-content .option {
+    background-color: white !important;
+    color: var(--brown-dark) !important;
+    transition: all 0.2s ease;
+    border-bottom: 1px solid var(--brown-lighter);
+  }
+  
+  .selectize-dropdown-content .option:hover,
+  .selectize-dropdown-content .option.active {
+    background-color: var(--brown-lighter) !important;
+  }
+  
+  .form-control {
+    border: 2px solid var(--dark-orange);
+    border-radius: 5px;
+  }
+  
+  .form-control:focus {
+    border-color: var(--brown-dark);
+    box-shadow: 0 0 0 0.2rem rgba(123, 63, 0, 0.25);
+  }
+  
+  .dataTables_wrapper {
+    padding: 10px;
+    background-color: white;
+    border-radius: 10px;
+  }
+  
+  /* Styling for data table headers */
+  table.dataTable thead th {
+    background-color: var(--brown-dark) !important;
+    color: white !important;
+    font-weight: bold !important;
+    border-bottom: 2px solid var(--brown-medium) !important;
+  }
+  
+  /* Remove blue selection color in tables */
+  table.dataTable tbody tr.selected {
+    background-color: var(--brown-lighter) !important;
+  }
+  
+  .dataTables_info, .dataTables_paginate {
+    margin-top: 10px !important;
+    color: var(--brown-dark) !important;
+  }
+  
+  .paginate_button {
+    color: var(--brown-dark) !important;
+  }
+  
+  .paginate_button.current {
+    background: var(--brown-light) !important;
+    border: 1px solid var(--brown-medium) !important;
+  }
+  
+  .summary-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 20px;
+  }
+  
+  .summary-table th {
+    background-color: var(--brown-dark);
+
+# Initialize product data
+excel_file <- "STORE_JAVIER.xlsx" 
+if (file.exists(excel_file)) {
+  sheet_names <- excel_sheets(excel_file)
+  product_data <- lapply(sheet_names, function(sheet) read_excel(excel_file, sheet = sheet))
+  names(product_data) <- sheet_names
+} else {
+  # Provide demo data if file doesn't exist
+  sheet_names <- c("Beverages", "Snacks", "Personal Care", "Others")
+  product_data <- lapply(1:length(sheet_names), function(i) {
+    data.frame(
+      `Product Name` = paste("Product", 1:5), 
+      `Unit Cost (PHP)` = sample(10:50, 5),
+      `Unit Price (PHP)` = sample(50:100, 5),
+      stringsAsFactors = FALSE
+    )
+  })
+  names(product_data) <- sheet_names
+}
+
+# Add "J. Others" category if it doesn't exist
+if (!"J. Others" %in% sheet_names) {
+  sheet_names <- c(sheet_names, "J. Others")
+  product_data[["J. Others"]] <- data.frame(
+    `Product Name` = c("Custom Item"),
+    `Unit Cost (PHP)` = c(0),
+    `Unit Price (PHP)` = c(0),
+    stringsAsFactors = FALSE
+  )
+}
+
+# Remove the LETTERS formatting completely
+categories <- setNames(sheet_names, sheet_names)
+
+# Server logic
+server <- function(input, output, session) {
+  
+  # Create reactive value for transaction data
+  transaction_data <- reactiveVal(read.csv(data_file, stringsAsFactors = FALSE))
+  
+  # Create reactive values for undo/redo functionality
+  transaction_history <- reactiveVal(list())
+  transaction_future <- reactiveVal(list())
+  
+  # Initialize history
+  observe({
+    if (length(transaction_history()) == 0) {
+      history <- transaction_history()
+      history[[1]] <- transaction_data()
+      transaction_history(history)
+    }
+  })
+  
+  # Add transaction
+  observeEvent(input$submit, {
+    # Validate inputs
+    if (input$customer_name == "" || input$mobile == "" || input$totalamount <= 0) {
+      showNotification("Please fill in all fields with valid values.", type = "error")
+      return()
+    }
+    
+    # Validate mobile number (11 digits for Philippines)
+    if (nchar(input$mobile) != 11 || !grepl("^[0-9]+$", input$mobile)) {
+      showNotification("Mobile number must be 11 digits.", type = "error")
+      return()
+    }
+    
+    # Calculate profit based on transaction type
+    profit <- 0
+    if (input$type == "Load") {
+      profit <- input$totalamount * 0.05 # 5% profit for load
+    } else if (input$type == "GCash-In" || input$type == "GCash-Out") {
+      profit <- input$totalamount * 0.02 # 2% profit for GCash transactions
+    }
+    
+    # Create new transaction record
+    new_row <- data.frame(
+      Date = as.character(Sys.Date()),
+      Customer_Name = input$customer_name,
+      Mobile_Number = input$mobile,
+      Type = input$type,
+      Total_Amount = input$totalamount,
+      Profit = profit,
+      stringsAsFactors = FALSE
+    )
+    
+    # Add to data
+    updated_data <- rbind(transaction_data(), new_row)
+    
+    # Save history for undo/redo
+    history <- transaction_history()
+    history[[length(history) + 1]] <- updated_data
+    transaction_history(history)
+    transaction_future(list()) # Clear future for new action
+    
+    # Update reactiveVal
+    transaction_data(updated_data)
+    
+    # Save to CSV
+    write.csv(updated_data, data_file, row.names = FALSE)
+    
+    # Reset inputs
+    updateTextInput(session, "customer_name", value = "")
+    updateTextInput(session, "mobile", value = "")
+    updateNumericInput(session, "totalamount", value = 0)
+    
+    showNotification("Transaction saved successfully!", type = "success")
+  })
+  
+  # PRODUCT SALES FUNCTIONALITY
+  
+  # Create reactive value for sales data
+  sales_reactive <- reactiveVal(sales_data)
+  
+  # Create reactive values for undo/redo functionality
+  sales_history <- reactiveVal(list())
+  sales_future <- reactiveVal(list())
+  
+  # Initialize sales history
+  observe({
+    if (length(sales_history()) == 0) {
+      history <- sales_history()
+      history[[1]] <- sales_reactive()
+      sales_history(history)
+    }
+  })
+  
+  # Custom product flag for "J. Others" category
+  isCustomProduct <- reactiveVal(FALSE)
+  
+  # Update product dropdown when category changes
+  observeEvent(input$category, {
+    selected_category <- input$category
+    category_products <- product_data[[selected_category]]$`Product Name`
+    updateSelectInput(session, "product", choices = category_products)
+    
+    # Check if "J. Others" is selected and show/hide custom input fields
+    if(selected_category == "J. Others") {
+      isCustomProduct(TRUE)
+      # Reset fields for custom entry
+      updateNumericInput(session, "unitCost", value = 0)
+      updateNumericInput(session, "unitPrice", value = 0)
+      # Add a text input field for custom product name
+      insertUI(
+        selector = "#productDetails",
+        where = "beforeBegin",
+        ui = tags$div(
+          id = "customProductField",
+          style = "margin-bottom: 15px;",
+          textInput("customProductName", "Custom Product Name:", value = "")
+        )
+      )
+    } else {
+      isCustomProduct(FALSE)
+      # Remove custom product field if it exists
+      removeUI(selector = "#customProductField", immediate = TRUE)
+    }
+  })
+  
+  # Update product details when product changes
+  observeEvent(input$product, {
+    selected_category <- input$category
+    selected_product <- input$product
+    
+    if (!is.null(selected_product) && selected_product != "" && 
+        !is.null(selected_category) && selected_category != "" && 
+        selected_category != "J. Others") {
+      
+      product_index <- which(product_data[[selected_category]]$`Product Name` == selected_product)
+      
+      if (length(product_index) > 0) {
+        unit_cost <- product_data[[selected_category]]$`Unit Cost (PHP)`[product_index]
+        unit_price <- product_data[[selected_category]]$`Unit Price (PHP)`[product_index]
+        
+        updateNumericInput(session, "unitCost", value = unit_cost)
+        updateNumericInput(session, "unitPrice", value = unit_price)
+      }
+    }
+  })
+  
+  # Calculate and display cost, revenue, and profit
+  output$totalCost <- renderText({
+    cost <- input$quantity * input$unitCost
+    paste0("₱", format(cost, big.mark = ",", nsmall = 2))
+  })
+  
+  output$totalRevenue <- renderText({
+    revenue <- input$quantity * input$unitPrice
+    paste0("₱", format(revenue, big.mark = ",", nsmall = 2))
+  })
+  
+  output$profit <- renderText({
+    profit <- (input$unitPrice - input$unitCost) * input$quantity
+    paste0("₱", format(profit, big.mark = ",", nsmall = 2))
+  })
+  
+  # Save sale transaction
+  observeEvent(input$saveSale, {
+    # Validate inputs
+    if (input$category == "J. Others") {
+      # For J. Others, validate custom fields
+      if ((is.null(input$customProductName) || input$customProductName == "") || 
+          input$quantity <= 0 || input$unitPrice <= 0) {
+        showNotification("Please enter a custom product name, quantity, and price.", type = "error")
+        return()
+      }
+      selected_product <- input$customProductName
+    } else {
+      # For regular categories, validate product selection
+      if (is.null(input$product) || input$product == "" || 
+          input$quantity <= 0 || input$unitPrice <= 0) {
+        showNotification("Please select a product and set valid quantity and prices.", type = "error")
+        return()
+      }
+      selected_product <- input$product
+    }
+    
+    # Calculate amounts
+    total_cost <- input$quantity * input$unitCost
+    total_revenue <- input$quantity * input$unitPrice
+    profit <- total_revenue - total_cost
+    
+    # Create new sale record
+    new_sale <- data.frame(
+      Date = as.character(input$dateInput),
+      Category = input$category,
+      Product = selected_product,
+      Quantity = input$quantity,
+      `Unit_Cost` = input$unitCost,
+      `Unit_Price` = input$unitPrice,
+      `Total_Cost` = total_cost,
+      `Total_Revenue` = total_revenue,
+      Profit = profit,
+      stringsAsFactors = FALSE
+    )
+    
+    # Add to data
+    updated_sales <- rbind(sales_reactive(), new_sale)
+    
+    # Save history for undo/redo
+    history <- sales_history()
+    history[[length(history) + 1]] <- updated_sales
+    sales_history(history)
+    sales_future(list()) # Clear future for new action
+    
+    # Update reactiveVal
+    sales_reactive(updated_sales)
+    
+    # Save to RDS file for more reliable data storage
+    saveRDS(updated_sales, saveDataPath)
+    
+    # Reset quantity and custom product name if applicable
+    updateNumericInput(session, "quantity", value = 1)
+    if (input$category == "J. Others") {
+      updateTextInput(session, "customProductName", value = "")
+    }
+    
+    showNotification("Sale recorded successfully!", type = "success")
+  })
+  
+  # Render sales table with proper column names and formatting
+  output$salesTable <- renderDT({
+    sales_data <- sales_reactive()
+    
+    # Rename columns for display if needed
+    colnames(sales_data) <- gsub("_", " ", colnames(sales_data))
+    
+    datatable(sales_data,
+              options = list(
+                pageLength = 5,
+                lengthMenu = c(5, 10, 15, 20),
+                columnDefs = list(
+                  # Format currency columns
+                  list(targets = c(4, 5, 6, 7, 8), 
+                       render = JS("function(data, type, row) { return '₱' + parseFloat(data).toFixed(2).replace(/\\B(?=(\\d{3})+(?!\\d))/g, ','); }")
+                  )
+                )
+              ),
+              selection = 'single')
+  })
+  
+  # Rest of the server code remains the same
+  
+  # Category Sales Plot - ensure it includes J. Others
+  output$categorySalesPlot <- renderPlotly({
+    data <- sales_reactive()
+    
+    if (nrow(data) == 0) {
+      return(plot_ly
+
+# ***
+
+# Update product dropdown when category changes
+observeEvent(input$category, {
+  selected_category <- input$category
+  category_products <- product_data[[selected_category]]$`Product Name`
+  updateSelectInput(session, "product", choices = category_products)
+  
+  # Check if "J. Others" is selected
+  if (selected_category == "J. Others") {
+    # Create custom product UI when J. Others is selected
+    if (!exists("customProductUI")) {
+      insertUI(
+        selector = "#productDetails",
+        where = "beforeBegin",
+        ui = div(
+          id = "customProductUI",
+          textInput("customProductName", "Custom Product Name:", ""),
+          helpText("Enter details for your custom product")
+        )
+      )
+    }
+    # Enable manual entry of costs
+    shinyjs::enable("unitCost")
+    shinyjs::enable("unitPrice")
+    updateNumericInput(session, "unitCost", value = 0)
+    updateNumericInput(session, "unitPrice", value = 0)
+  } else {
+    # Remove custom product UI if it exists
+    if (exists("customProductUI")) {
+      removeUI(selector = "#customProductUI")
+    }
+  }
+})
+
+# Update product details when product changes
+observeEvent(input$product, {
+  selected_category <- input$category
+  selected_product <- input$product
+  
+  if (!is.null(selected_product) && selected_product != "" && 
+      !is.null(selected_category) && selected_category != "" && 
+      selected_category != "J. Others") {
+    
+    product_index <- which(product_data[[selected_category]]$`Product Name` == selected_product)
+    
+    if (length(product_index) > 0) {
+      unit_cost <- product_data[[selected_category]]$`Unit Cost (PHP)`[product_index]
+      unit_price <- product_data[[selected_category]]$`Unit Price (PHP)`[product_index]
+      
+      updateNumericInput(session, "unitCost", value = unit_cost)
+      updateNumericInput(session, "unitPrice", value = unit_price)
+      
+      # Disable manual editing for regular products
+      shinyjs::disable("unitCost")
+      shinyjs::disable("unitPrice")
+    }
+  }
+})
+
+# Calculate and display cost, revenue, and profit
+output$totalCost <- renderText({
+  cost <- input$quantity * input$unitCost
+  paste0("₱", format(cost, big.mark = ",", nsmall = 2))
+})
+
+output$totalRevenue <- renderText({
+  revenue <- input$quantity * input$unitPrice
+  paste0("₱", format(revenue, big.mark = ",", nsmall = 2))
+})
+
+output$profit <- renderText({
+  profit <- (input$unitPrice - input$unitCost) * input$quantity
+  paste0("₱", format(profit, big.mark = ",", nsmall = 2))
+})
+
+# Save sale transaction
+observeEvent(input$saveSale, {
+  # Different validation based on whether it's a custom product or regular product
+  if (input$category == "J. Others") {
+    if (is.null(input$customProductName) || input$customProductName == "" || 
+        input$quantity <= 0 || input$unitPrice <= 0) {
+      showNotification("Please enter a custom product name, quantity, and price.", type = "error")
+      return()
+    }
+    selected_product <- input$customProductName
+  } else {
+    if (is.null(input$product) || input$product == "" || 
+        input$quantity <= 0 || input$unitPrice <= 0) {
+      showNotification("Please select a product and set valid quantity and prices.", type = "error")
+      return()
+    }
+    selected_product <- input$product
+  }
+  
+  # Calculate amounts
+  total_cost <- input$quantity * input$unitCost
+  total_revenue <- input$quantity * input$unitPrice
+  profit <- total_revenue - total_cost
+  
+  # Create new sale record
+  new_sale <- data.frame(
+    Date = as.character(input$dateInput),
+    Category = input$category,
+    Product = selected_product,
+    Quantity = input$quantity,
+    Unit_Cost = input$unitCost,
+    Unit_Price = input$unitPrice,
+    Total_Cost = total_cost,
+    Total_Revenue = total_revenue,
+    Profit = profit,
+    stringsAsFactors = FALSE
+  )
+  
+  # Add to data
+  updated_sales <- rbind(sales_reactive(), new_sale)
+  
+  # Save history for undo/redo
+  history <- sales_history()
+  history[[length(history) + 1]] <- updated_sales
+  sales_history(history)
+  sales_future(list()) # Clear future for new action
+  
+  # Update reactiveVal
+  sales_reactive(updated_sales)
+  
+  # Save to RDS file
+  saveRDS(updated_sales, saveDataPath)
+  
+  # Reset inputs
+  updateNumericInput(session, "quantity", value = 1)
+  if (input$category == "J. Others") {
+    updateTextInput(session, "customProductName", value = "")
+    updateNumericInput(session, "unitCost", value = 0)
+    updateNumericInput(session, "unitPrice", value = 0)
+  }
+  
+  showNotification("Sale recorded successfully!", type = "success")
+})
+
+# Render sales table with proper column names and formatting
+output$salesTable <- renderDT({
+  sales_data <- sales_reactive()
+  
+  # Make sure column names use spaces instead of underscores for display
+  if (nrow(sales_data) > 0) {
+    display_data <- sales_data
+    colnames(display_data) <- gsub("_", " ", colnames(display_data))
+    
+    datatable(display_data,
+              options = list(
+                pageLength = 5,
+                lengthMenu = c(5, 10, 15, 20),
+                columnDefs = list(
+                  # Format currency columns
+                  list(targets = c(4, 5, 6, 7, 8), 
+                       render = JS("function(data, type, row) { return '₱' + parseFloat(data).toFixed(2).replace(/\\B(?=(\\d{3})+(?!\\d))/g, ','); }")
+                  )
+                )
+              ),
+              selection = 'single')
+  } else {
+    # Return empty table with correct structure
+    empty_data <- data.frame(
+      Date = character(),
+      Category = character(),
+      Product = character(),
+      Quantity = numeric(),
+      `Unit Cost` = numeric(),
+      `Unit Price` = numeric(),
+      `Total Cost` = numeric(),
+      `Total Revenue` = numeric(),
+      Profit = numeric(),
+      stringsAsFactors = FALSE
+    )
+    
+    datatable(empty_data,
+              options = list(
+                pageLength = 5,
+                lengthMenu = c(5, 10, 15, 20)
+              ),
+              selection = 'single')
+  }
+})
+
+# Category Sales Plot - ensure it includes J. Others correctly
+output$categorySalesPlot <- renderPlotly({
+  data <- sales_reactive()
+  
+  if (nrow(data) == 0) {
+    return(plot_ly() %>% 
+             layout(title = "No sales data available",
+                    xaxis = list(title = ""),
+                    yaxis = list(title = "")))
+  }
+  
+  # Group by category and calculate totals - including J. Others
+  category_data <- data %>%
+    group_by(Category) %>%
+    summarize(Revenue = sum(Total_Revenue),
+              Cost = sum(Total_Cost),
+              Profit = sum(Profit))
+  
+  # Plotting with custom colors to ensure J. Others is visible
+  colors <- colorRampPalette(brewer.pal(8, "Set3"))(length(unique(data$Category)))
+  
+  # Plotting
+  plot_ly() %>%
+    add_pie(data = category_data, labels = ~Category, values = ~Revenue, 
+            name = 'Revenue by Category',
+            domain = list(row = 0, column = 0),
+            marker = list(colors = colors),
+            title = "Revenue") %>%
+    add_pie(data = category_data, labels = ~Category, values = ~Profit, 
+            name = 'Profit by Category',
+            domain = list(row = 0, column = 1),
+            marker = list(colors = colors),
+            title = "Profit") %>%
+    layout(title = "Sales by Product Category",
+           grid = list(rows = 1, columns = 2),
+           showlegend = TRUE)
+})
+
+# **
+             # Product Sales Plot
+output$productSalesPlot <- renderPlotly({
+  data <- sales_reactive()
+  
+  if (nrow(data) == 0) {
+    return(plot_ly() %>% 
+             layout(title = "No sales data available",
+                    xaxis = list(title = ""),
+                    yaxis = list(title = "")))
+  }
+  
+  # Group by product and calculate totals (including custom products)
+  product_data <- data %>%
+    group_by(Product, Category) %>%
+    summarize(Revenue = sum(Total_Revenue),
+              Profit = sum(Profit),
+              Quantity = sum(Quantity)) %>%
+    arrange(desc(Revenue)) %>%
+    head(10)  # Top 10 products
+  
+  # Create a custom color scale based on categories
+  category_colors <- setNames(
+    colorRampPalette(brewer.pal(8, "Set3"))(length(unique(product_data$Category))),
+    unique(product_data$Category)
+  )
+  
+  # Ensure that product_data$Product is a factor with levels ordered by Revenue
+  product_data$Product <- factor(product_data$Product, 
+                                 levels = product_data$Product[order(product_data$Revenue)])
+  
+  # Plotting
+  plot_ly(product_data) %>%
+    add_bars(x = ~Product, y = ~Revenue, color = ~Category,
+             name = "Revenue", colors = category_colors,
+             hoverinfo = "text",
+             text = ~paste("Product:", Product, "<br>",
+                           "Category:", Category, "<br>",
+                           "Revenue: ₱", format(Revenue, big.mark = ",", nsmall = 2), "<br>",
+                           "Profit: ₱", format(Profit, big.mark = ",", nsmall = 2), "<br>",
+                           "Quantity:", Quantity)) %>%
+    layout(title = "Top 10 Products by Sales Revenue",
+           xaxis = list(title = "Product", tickangle = 45),
+           yaxis = list(title = "Revenue (₱)"),
+           margin = list(b = 120),  # Add bottom margin for rotated labels
+           barmode = "group")
+})
+
+# Daily Sales Trend
+output$dailySalesPlot <- renderPlotly({
+  data <- sales_reactive()
+  
+  if (nrow(data) == 0) {
+    return(plot_ly() %>% 
+             layout(title = "No sales data available",
+                    xaxis = list(title = ""),
+                    yaxis = list(title = "")))
+  }
+  
+  # Convert date strings to Date objects for proper sorting
+  data$Date <- as.Date(data$Date)
+  
+  # Group by date and calculate daily totals
+  daily_data <- data %>%
+    group_by(Date) %>%
+    summarize(Revenue = sum(Total_Revenue),
+              Profit = sum(Profit)) %>%
+    arrange(Date)
+  
+  # Create the plot
+  plot_ly(daily_data) %>%
+    add_trace(x = ~Date, y = ~Revenue, type = 'scatter', mode = 'lines+markers',
+              name = 'Revenue', line = list(color = '#7B3F00', width = 3),
+              marker = list(color = '#CD853F', size = 8)) %>%
+    add_trace(x = ~Date, y = ~Profit, type = 'scatter', mode = 'lines+markers',
+              name = 'Profit', line = list(color = '#D2691E', width = 3, dash = 'dash'),
+              marker = list(color = '#A0522D', size = 8)) %>%
+    layout(title = "Daily Sales Trend",
+           xaxis = list(title = "Date"),
+           yaxis = list(title = "Amount (₱)"),
+           legend = list(x = 0.1, y = 0.9))
+})
+
+# Monthly Sales Summary
+output$monthlySalesSummary <- renderTable({
+  data <- sales_reactive()
+  
+  if (nrow(data) == 0) {
+    return(data.frame(
+      Month = character(),
+      Total_Revenue = numeric(),
+      Total_Profit = numeric(),
+      Profit_Margin = numeric(),
+      stringsAsFactors = FALSE
+    ))
+  }
+  
+  # Convert date strings to Date objects
+  data$Date <- as.Date(data$Date)
+  
+  # Extract month and year
+  data$Month <- format(data$Date, "%Y-%m")
+  
+  # Calculate monthly summary
+  monthly_summary <- data %>%
+    group_by(Month) %>%
+    summarize(
+      Total_Revenue = sum(Total_Revenue),
+      Total_Profit = sum(Profit),
+      Profit_Margin = round(sum(Profit) / sum(Total_Revenue) * 100, 2)
+    ) %>%
+    arrange(desc(Month))
+  
+  # Format for display
+  monthly_summary$Total_Revenue <- paste0("₱", format(monthly_summary$Total_Revenue, big.mark = ",", nsmall = 2))
+  monthly_summary$Total_Profit <- paste0("₱", format(monthly_summary$Total_Profit, big.mark = ",", nsmall = 2))
+  monthly_summary$Profit_Margin <- paste0(monthly_summary$Profit_Margin, "%")
+  
+  monthly_summary
+})
+
+# Delete sale record
+observeEvent(input$deleteSale, {
+  if (is.null(input$salesTable_rows_selected)) {
+    showNotification("Please select a sale to delete.", type = "warning")
+    return()
+  }
+  
+  # Get the row to delete
+  row_to_delete <- input$salesTable_rows_selected
+  
+  # Get the current data
+  current_data <- sales_reactive()
+  
+  # Save history for undo/redo
+  history <- sales_history()
+  history[[length(history) + 1]] <- current_data[-row_to_delete, ]
+  sales_history(history)
+  sales_future(list()) # Clear future for new action
+  
+  # Update data without the deleted row
+  sales_reactive(current_data[-row_to_delete, ])
+  
+  # Save to RDS file
+  saveRDS(sales_reactive(), saveDataPath)
+  
+  showNotification("Sale record deleted successfully!", type = "success")
+})
+
+# Undo sale action
+observeEvent(input$undoSale, {
+  history <- sales_history()
+  future <- sales_future()
+  
+  if (length(history) > 1) {
+    # Store current state in future
+    future[[length(future) + 1]] <- history[[length(history)]]
+    sales_future(future)
+    
+    # Remove current state from history
+    history <- history[-length(history)]
+    sales_history(history)
+    
+    # Set the new current state
+    sales_reactive(history[[length(history)]])
+    
+    # Save to RDS file
+    saveRDS(sales_reactive(), saveDataPath)
+    
+    showNotification("Undo successful!", type = "default")
+  } else {
+    showNotification("Nothing to undo!", type = "warning")
+  }
+})
+
+# Redo sale action
+observeEvent(input$redoSale, {
+  history <- sales_history()
+  future <- sales_future()
+  
+  if (length(future) > 0) {
+    # Get the state to restore
+    state_to_restore <- future[[length(future)]]
+    
+    # Add current state to history
+    history[[length(history) + 1]] <- state_to_restore
+    sales_history(history)
+    
+    # Remove the state we just restored from future
+    future <- future[-length(future)]
+    sales_future(future)
+    
+    # Set the new current state
+    sales_reactive(state_to_restore)
+    
+    # Save to RDS file
+    saveRDS(sales_reactive(), saveDataPath)
+    
+    showNotification("Redo successful!", type = "default")
+  } else {
+    showNotification("Nothing to redo!", type = "warning")
+  }
+})
+
+# Export sales data to Excel
+observeEvent(input$exportSales, {
+  data <- sales_reactive()
+  
+  if (nrow(data) == 0) {
+    showNotification("No data to export.", type = "warning")
+    return()
+  }
+  
+  # Create a temporary file
+  temp_file <- tempfile(fileext = ".xlsx")
+  
+  # Export data to Excel
+  writexl::write_xlsx(data, temp_file)
+  
+  # Use downloadHandler to serve the file
+  showModal(modalDialog(
+    title = "Export Sales Data",
+    "Click the button below to download the sales data:",
+    br(), br(),
+    downloadButton("downloadSales", "Download Excel File"),
+    easyClose = TRUE,
+    footer = NULL
+  ))
+})
+
+# Handle the download
+output$downloadSales <- downloadHandler(
+  filename = function() {
+    paste0("sales_data_", format(Sys.Date(), "%Y%m%d"), ".xlsx")
+  },
+  content = function(file) {
+    writexl::write_xlsx(sales_reactive(), file)
+  }
+)
+
+# Generate sales report
+output$salesSummary <- renderUI({
+  data <- sales_reactive()
+  
+  if (nrow(data) == 0) {
+    return(p("No sales data available."))
+  }
+  
+  # Calculate summary statistics
+  total_revenue <- sum(data$Total_Revenue)
+  total_profit <- sum(data$Profit)
+  total_cost <- sum(data$Total_Cost)
+  profit_margin <- round(total_profit / total_revenue * 100, 2)
+  total_products_sold <- sum(data$Quantity)
+  
+  # Get date range
+  date_range <- range(as.Date(data$Date))
+  
+  # Find top performing category
+  top_category <- data %>%
+    group_by(Category) %>%
+    summarize(Revenue = sum(Total_Revenue)) %>%
+    arrange(desc(Revenue)) %>%
+    slice(1) %>%
+    pull(Category)
+  
+  # Find top performing product
+  top_product <- data %>%
+    group_by(Product) %>%
+    summarize(Revenue = sum(Total_Revenue)) %>%
+    arrange(desc(Revenue)) %>%
+    slice(1) %>%
+    pull(Product)
+  
+  div(
+    class = "report-summary",
+    style = "font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;",
+    
+    div(
+      class = "report-header",
+      style = "margin-bottom: 20px; text-align: center;",
+      h2("Sales Performance Summary", 
+         style = "color: #7B3F00; border-bottom: 2px solid #CD853F; padding-bottom: 10px;"),
+      p(paste0("Period: ", format(date_range[1], "%B %d, %Y"), " to ", format(date_range[2], "%B %d, %Y")),
+        style = "font-style: italic; color: #666;")
+    ),
+    
+    fluidRow(
+      column(6,
+        div(
+          class = "summary-card",
+          style = "background-color: #FFF; border-radius: 8px; padding: 15px; margin-bottom: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);",
+          h4("Revenue & Profit", style = "color: #7B3F00; border-bottom: 1px solid #DEB887; padding-bottom: 5px;"),
+          div(style = "display: flex; justify-content: space-between;",
+              div(
+
+** ###
+# Product Sales Plot
+output$productSalesPlot <- renderPlotly({
+  data <- sales_reactive()
+  
+  if (nrow(data) == 0) {
+    return(plot_ly() %>% 
+             layout(title = "No sales data available",
+                    xaxis = list(title = ""),
+                    yaxis = list(title = "")))
+  }
+  
+  # Group by product and calculate totals (including custom products)
+  product_data <- data %>%
+    group_by(Product, Category) %>%
+    summarize(Revenue = sum(Total_Revenue),
+              Profit = sum(Profit),
+              Quantity = sum(Quantity)) %>%
+    arrange(desc(Revenue)) %>%
+    head(10)  # Top 10 products
+  
+  # Create a custom color scale based on categories
+  category_colors <- setNames(
+    colorRampPalette(brewer.pal(8, "Set3"))(length(unique(product_data$Category))),
+    unique(product_data$Category)
+  )
+  
+  # Ensure that product_data$Product is a factor with levels ordered by Revenue
+  product_data$Product <- factor(product_data$Product, 
+                                 levels = product_data$Product[order(product_data$Revenue)])
+  
+  # Plotting
+  plot_ly(product_data) %>%
+    add_bars(x = ~Product, y = ~Revenue, color = ~Category,
+             name = "Revenue", colors = category_colors,
+             hoverinfo = "text",
+             text = ~paste("Product:", Product, "<br>",
+                           "Category:", Category, "<br>",
+                           "Revenue: ₱", format(Revenue, big.mark = ",", nsmall = 2), "<br>",
+                           "Profit: ₱", format(Profit, big.mark = ",", nsmall = 2), "<br>",
+                           "Quantity:", Quantity)) %>%
+    layout(title = "Top 10 Products by Sales Revenue",
+           xaxis = list(title = "Product", tickangle = 45),
+           yaxis = list(title = "Revenue (₱)"),
+           margin = list(b = 120),  # Add bottom margin for rotated labels
+           barmode = "group")
+})
+
+# Daily Sales Trend
+output$dailySalesPlot <- renderPlotly({
+  data <- sales_reactive()
+  
+  if (nrow(data) == 0) {
+    return(plot_ly() %>% 
+             layout(title = "No sales data available",
+                    xaxis = list(title = ""),
+                    yaxis = list(title = "")))
+  }
+  
+  # Convert date strings to Date objects for proper sorting
+  data$Date <- as.Date(data$Date)
+  
+  # Group by date and calculate daily totals
+  daily_data <- data %>%
+    group_by(Date) %>%
+    summarize(Revenue = sum(Total_Revenue),
+              Profit = sum(Profit)) %>%
+    arrange(Date)
+  
+  # Create the plot
+  plot_ly(daily_data) %>%
+    add_trace(x = ~Date, y = ~Revenue, type = 'scatter', mode = 'lines+markers',
+              name = 'Revenue', line = list(color = '#7B3F00', width = 3),
+              marker = list(color = '#CD853F', size = 8)) %>%
+    add_trace(x = ~Date, y = ~Profit, type = 'scatter', mode = 'lines+markers',
+              name = 'Profit', line = list(color = '#D2691E', width = 3, dash = 'dash'),
+              marker = list(color = '#A0522D', size = 8)) %>%
+    layout(title = "Daily Sales Trend",
+           xaxis = list(title = "Date"),
+           yaxis = list(title = "Amount (₱)"),
+           legend = list(x = 0.1, y = 0.9))
+})
+
+# Monthly Sales Summary
+output$monthlySalesSummary <- renderTable({
+  data <- sales_reactive()
+  
+  if (nrow(data) == 0) {
+    return(data.frame(
+      Month = character(),
+      Total_Revenue = numeric(),
+      Total_Profit = numeric(),
+      Profit_Margin = numeric(),
+      stringsAsFactors = FALSE
+    ))
+  }
+  
+  # Convert date strings to Date objects
+  data$Date <- as.Date(data$Date)
+  
+  # Extract month and year
+  data$Month <- format(data$Date, "%Y-%m")
+  
+  # Calculate monthly summary
+  monthly_summary <- data %>%
+    group_by(Month) %>%
+    summarize(
+      Total_Revenue = sum(Total_Revenue),
+      Total_Profit = sum(Profit),
+      Profit_Margin = round(sum(Profit) / sum(Total_Revenue) * 100, 2)
+    ) %>%
+    arrange(desc(Month))
+  
+  # Format for display
+  monthly_summary$Total_Revenue <- paste0("₱", format(monthly_summary$Total_Revenue, big.mark = ",", nsmall = 2))
+  monthly_summary$Total_Profit <- paste0("₱", format(monthly_summary$Total_Profit, big.mark = ",", nsmall = 2))
+  monthly_summary$Profit_Margin <- paste0(monthly_summary$Profit_Margin, "%")
+  
+  monthly_summary
+})
+
+# Delete sale record
+observeEvent(input$deleteSale, {
+  if (is.null(input$salesTable_rows_selected)) {
+    showNotification("Please select a sale to delete.", type = "warning")
+    return()
+  }
+  
+  # Get the row to delete
+  row_to_delete <- input$salesTable_rows_selected
+  
+  # Get the current data
+  current_data <- sales_reactive()
+  
+  # Save history for undo/redo
+  history <- sales_history()
+  history[[length(history) + 1]] <- current_data[-row_to_delete, ]
+  sales_history(history)
+  sales_future(list()) # Clear future for new action
+  
+  # Update data without the deleted row
+  sales_reactive(current_data[-row_to_delete, ])
+  
+  # Save to RDS file
+  saveRDS(sales_reactive(), saveDataPath)
+  
+  showNotification("Sale record deleted successfully!", type = "success")
+})
+
+# Undo sale action
+observeEvent(input$undoSale, {
+  history <- sales_history()
+  future <- sales_future()
+  
+  if (length(history) > 1) {
+    # Store current state in future
+    future[[length(future) + 1]] <- history[[length(history)]]
+    sales_future(future)
+    
+    # Remove current state from history
+    history <- history[-length(history)]
+    sales_history(history)
+    
+    # Set the new current state
+    sales_reactive(history[[length(history)]])
+    
+    # Save to RDS file
+    saveRDS(sales_reactive(), saveDataPath)
+    
+    showNotification("Undo successful!", type = "default")
+  } else {
+    showNotification("Nothing to undo!", type = "warning")
+  }
+})
+
+# Redo sale action
+observeEvent(input$redoSale, {
+  history <- sales_history()
+  future <- sales_future()
+  
+  if (length(future) > 0) {
+    # Get the state to restore
+    state_to_restore <- future[[length(future)]]
+    
+    # Add current state to history
+    history[[length(history) + 1]] <- state_to_restore
+    sales_history(history)
+    
+    # Remove the state we just restored from future
+    future <- future[-length(future)]
+    sales_future(future)
+    
+    # Set the new current state
+    sales_reactive(state_to_restore)
+    
+    # Save to RDS file
+    saveRDS(sales_reactive(), saveDataPath)
+    
+    showNotification("Redo successful!", type = "default")
+  } else {
+    showNotification("Nothing to redo!", type = "warning")
+  }
+})
+
+# Export sales data to Excel
+observeEvent(input$exportSales, {
+  data <- sales_reactive()
+  
+  if (nrow(data) == 0) {
+    showNotification("No data to export.", type = "warning")
+    return()
+  }
+  
+  # Create a temporary file
+  temp_file <- tempfile(fileext = ".xlsx")
+  
+  # Export data to Excel
+  writexl::write_xlsx(data, temp_file)
+  
+  # Use downloadHandler to serve the file
+  showModal(modalDialog(
+    title = "Export Sales Data",
+    "Click the button below to download the sales data:",
+    br(), br(),
+    downloadButton("downloadSales", "Download Excel File"),
+    easyClose = TRUE,
+    footer = NULL
+  ))
+})
+
+# Handle the download
+output$downloadSales <- downloadHandler(
+  filename = function() {
+    paste0("sales_data_", format(Sys.Date(), "%Y%m%d"), ".xlsx")
+  },
+  content = function(file) {
+    writexl::write_xlsx(sales_reactive(), file)
+  }
+)
+
+# Generate sales report
+output$salesSummary <- renderUI({
+  data <- sales_reactive()
+  
+  if (nrow(data) == 0) {
+    return(p("No sales data available."))
+  }
+  
+  # Calculate summary statistics
+  total_revenue <- sum(data$Total_Revenue)
+  total_profit <- sum(data$Profit)
+  total_cost <- sum(data$Total_Cost)
+  profit_margin <- round(total_profit / total_revenue * 100, 2)
+  total_products_sold <- sum(data$Quantity)
+  
+  # Get date range
+  date_range <- range(as.Date(data$Date))
+  
+  # Find top performing category
+  top_category <- data %>%
+    group_by(Category) %>%
+    summarize(Revenue = sum(Total_Revenue)) %>%
+    arrange(desc(Revenue)) %>%
+    slice(1) %>%
+    pull(Category)
+  
+  # Find top performing product
+  top_product <- data %>%
+    group_by(Product) %>%
+    summarize(Revenue = sum(Total_Revenue)) %>%
+    arrange(desc(Revenue)) %>%
+    slice(1) %>%
+    pull(Product)
+  
+  div(
+    class = "report-summary",
+    style = "font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;",
+    
+    div(
+      class = "report-header",
+      style = "margin-bottom: 20px; text-align: center;",
+      h2("Sales Performance Summary", 
+         style = "color: #7B3F00; border-bottom: 2px solid #CD853F; padding-bottom: 10px;"),
+      p(paste0("Period: ", format(date_range[1], "%B %d, %Y"), " to ", format(date_range[2], "%B %d, %Y")),
+        style = "font-style: italic; color: #666;")
+    ),
+    
+    fluidRow(
+      column(6,
+        div(
+          class = "summary-card",
+          style = "background-color: #FFF; border-radius: 8px; padding: 15px; margin-bottom: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);",
+          h4("Revenue & Profit", style = "color: #7B3F00; border-bottom: 1px solid #DEB887; padding-bottom: 5px;"),
+          div(style = "display: flex; justify-content: space-between;",
+              div(
+                p(strong("Total Revenue:"),
+
+#**
+# Product Sales Plot
+output$productSalesPlot <- renderPlotly({
+  data <- sales_reactive()
+  
+  if (nrow(data) == 0) {
+    return(plot_ly() %>% 
+             layout(title = "No sales data available",
+                    xaxis = list(title = ""),
+                    yaxis = list(title = "")))
+  }
+  
+  # Group by product and calculate totals (including custom products)
+  product_data <- data %>%
+    group_by(Product, Category) %>%
+    summarize(Revenue = sum(Total_Revenue),
+              Profit = sum(Profit),
+              Quantity = sum(Quantity)) %>%
+    arrange(desc(Revenue)) %>%
+    head(10)  # Top 10 products
+  
+  # Create a custom color scale based on categories
+  category_colors <- setNames(
+    colorRampPalette(brewer.pal(8, "Set3"))(length(unique(product_data$Category))),
+    unique(product_data$Category)
+  )
+  
+  # Ensure that product_data$Product is a factor with levels ordered by Revenue
+  product_data$Product <- factor(product_data$Product, 
+                                 levels = product_data$Product[order(product_data$Revenue)])
+  
+  # Plotting
+  plot_ly(product_data) %>%
+    add_bars(x = ~Product, y = ~Revenue, color = ~Category,
+             name = "Revenue", colors = category_colors,
+             hoverinfo = "text",
+             text = ~paste("Product:", Product, "<br>",
+                           "Category:", Category, "<br>",
+                           "Revenue: ₱", format(Revenue, big.mark = ",", nsmall = 2), "<br>",
+                           "Profit: ₱", format(Profit, big.mark = ",", nsmall = 2), "<br>",
+                           "Quantity:", Quantity)) %>%
+    layout(title = "Top 10 Products by Sales Revenue",
+           xaxis = list(title = "Product", tickangle = 45),
+           yaxis = list(title = "Revenue (₱)"),
+           margin = list(b = 120),  # Add bottom margin for rotated labels
+           barmode = "group")
+})
+
+# Daily Sales Trend
+output$dailySalesPlot <- renderPlotly({
+  data <- sales_reactive()
+  
+  if (nrow(data) == 0) {
+    return(plot_ly() %>% 
+             layout(title = "No sales data available",
+                    xaxis = list(title = ""),
+                    yaxis = list(title = "")))
+  }
+  
+  # Convert date strings to Date objects for proper sorting
+  data$Date <- as.Date(data$Date)
+  
+  # Group by date and calculate daily totals
+  daily_data <- data %>%
+    group_by(Date) %>%
+    summarize(Revenue = sum(Total_Revenue),
+              Profit = sum(Profit)) %>%
+    arrange(Date)
+  
+  # Create the plot
+  plot_ly(daily_data) %>%
+    add_trace(x = ~Date, y = ~Revenue, type = 'scatter', mode = 'lines+markers',
+              name = 'Revenue', line = list(color = '#7B3F00', width = 3),
+              marker = list(color = '#CD853F', size = 8)) %>%
+    add_trace(x = ~Date, y = ~Profit, type = 'scatter', mode = 'lines+markers',
+              name = 'Profit', line = list(color = '#D2691E', width = 3, dash = 'dash'),
+              marker = list(color = '#A0522D', size = 8)) %>%
+    layout(title = "Daily Sales Trend",
+           xaxis = list(title = "Date"),
+           yaxis = list(title = "Amount (₱)"),
+           legend = list(x = 0.1, y = 0.9))
+})
+
+# Monthly Sales Summary
+output$monthlySalesSummary <- renderTable({
+  data <- sales_reactive()
+  
+  if (nrow(data) == 0) {
+    return(data.frame(
+      Month = character(),
+      Total_Revenue = numeric(),
+      Total_Profit = numeric(),
+      Profit_Margin = numeric(),
+      stringsAsFactors = FALSE
+    ))
+  }
+  
+  # Convert date strings to Date objects
+  data$Date <- as.Date(data$Date)
+  
+  # Extract month and year
+  data$Month <- format(data$Date, "%Y-%m")
+  
+  # Calculate monthly summary
+  monthly_summary <- data %>%
+    group_by(Month) %>%
+    summarize(
+      Total_Revenue = sum(Total_Revenue),
+      Total_Profit = sum(Profit),
+      Profit_Margin = round(sum(Profit) / sum(Total_Revenue) * 100, 2)
+    ) %>%
+    arrange(desc(Month))
+  
+  # Format for display
+  monthly_summary$Total_Revenue <- paste0("₱", format(monthly_summary$Total_Revenue, big.mark = ",", nsmall = 2))
+  monthly_summary$Total_Profit <- paste0("₱", format(monthly_summary$Total_Profit, big.mark = ",", nsmall = 2))
+  monthly_summary$Profit_Margin <- paste0(monthly_summary$Profit_Margin, "%")
+  
+  monthly_summary
+})
+
+# Delete sale record
+observeEvent(input$deleteSale, {
+  if (is.null(input$salesTable_rows_selected)) {
+    showNotification("Please select a sale to delete.", type = "warning")
+    return()
+  }
+  
+  # Get the row to delete
+  row_to_delete <- input$salesTable_rows_selected
+  
+  # Get the current data
+  current_data <- sales_reactive()
+  
+  # Save history for undo/redo
+  history <- sales_history()
+  history[[length(history) + 1]] <- current_data[-row_to_delete, ]
+  sales_history(history)
+  sales_future(list()) # Clear future for new action
+  
+  # Update data without the deleted row
+  sales_reactive(current_data[-row_to_delete, ])
+  
+  # Save to RDS file
+  saveRDS(sales_reactive(), saveDataPath)
+  
+  showNotification("Sale record deleted successfully!", type = "success")
+})
+
+# Undo sale action
+observeEvent(input$undoSale, {
+  history <- sales_history()
+  future <- sales_future()
+  
+  if (length(history) > 1) {
+    # Store current state in future
+    future[[length(future) + 1]] <- history[[length(history)]]
+    sales_future(future)
+    
+    # Remove current state from history
+    history <- history[-length(history)]
+    sales_history(history)
+    
+    # Set the new current state
+    sales_reactive(history[[length(history)]])
+    
+    # Save to RDS file
+    saveRDS(sales_reactive(), saveDataPath)
+    
+    showNotification("Undo successful!", type = "default")
+  } else {
+    showNotification("Nothing to undo!", type = "warning")
+  }
+})
+
+# Redo sale action
+observeEvent(input$redoSale, {
+  history <- sales_history()
+  future <- sales_future()
+  
+  if (length(future) > 0) {
+    # Get the state to restore
+    state_to_restore <- future[[length(future)]]
+    
+    # Add current state to history
+    history[[length(history) + 1]] <- state_to_restore
+    sales_history(history)
+    
+    # Remove the state we just restored from future
+    future <- future[-length(future)]
+    sales_future(future)
+    
+    # Set the new current state
+    sales_reactive(state_to_restore)
+    
+    # Save to RDS file
+    saveRDS(sales_reactive(), saveDataPath)
+    
+    showNotification("Redo successful!", type = "default")
+  } else {
+    showNotification("Nothing to redo!", type = "warning")
+  }
+})
+
+# Export sales data to Excel
+observeEvent(input$exportSales, {
+  data <- sales_reactive()
+  
+  if (nrow(data) == 0) {
+    showNotification("No data to export.", type = "warning")
+    return()
+  }
+  
+  # Show download modal
+  showModal(modalDialog(
+    title = "Export Sales Data",
+    "Click the button below to download the sales data:",
+    br(), br(),
+    downloadButton("downloadSales", "Download Excel File"),
+    easyClose = TRUE,
+    footer = NULL
+  ))
+})
+
+# Handle the download
+output$downloadSales <- downloadHandler(
+  filename = function() {
+    paste0("sales_data_", format(Sys.Date(), "%Y%m%d"), ".xlsx")
+  },
+  content = function(file) {
+    writexl::write_xlsx(sales_reactive(), file)
+  }
+)
+
+# Generate sales report
+output$salesSummary <- renderUI({
+  data <- sales_reactive()
+  
+  if (nrow(data) == 0) {
+    return(p("No sales data available."))
+  }
+  
+  # Calculate summary statistics
+  total_revenue <- sum(data$Total_Revenue)
+  total_profit <- sum(data$Profit)
+  total_cost <- sum(data$Total_Cost)
+  profit_margin <- round(total_profit / total_revenue * 100, 2)
+  total_products_sold <- sum(data$Quantity)
+  
+  # Get date range
+  date_range <- range(as.Date(data$Date))
+  
+  # Find top performing category
+  top_category_data <- data %>%
+    group_by(Category) %>%
+    summarize(Revenue = sum(Total_Revenue)) %>%
+    arrange(desc(Revenue)) %>%
+    slice(1)
+  
+  top_category <- top_category_data$Category
+  top_category_revenue <- top_category_data$Revenue
+  
+  # Find top performing product
+  top_product_data <- data %>%
+    group_by(Product) %>%
+    summarize(Revenue = sum(Total_Revenue)) %>%
+    arrange(desc(Revenue)) %>%
+    slice(1)
+  
+  top_product <- top_product_data$Product
+  top_product_revenue <- top_product_data$Revenue
+  
+  # Create the summary UI
+  div(
+    class = "report-summary",
+    style = "font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;",
+    
+    div(
+      class = "report-header",
+      style = "margin-bottom: 20px; text-align: center;",
+      h2("Sales Performance Summary", 
+         style = "color: #7B3F00; border-bottom: 2px solid #CD853F; padding-bottom: 10px;"),
+      p(paste0("Period: ", format(date_range[1], "%B %d, %Y"), " to ", format(date_range[2], "%B %d, %Y")),
+        style = "font-style: italic; color: #666;")
+    ),
+    
+    fluidRow(
+      column(6,
+        div(
+          class = "summary-card",
+          style = "background-color: #FFF; border-radius: 8px; padding: 15px; margin-bottom: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);",
+          h4("Revenue & Profit", style = "color: #7B3F00; border-bottom: 1px solid #DEB887; padding-bottom: 5px;"),
+          div(style = "display:
+
+#**
+p(strong("Total Revenue:"), style = "margin: 5px 0;"),
+p(paste0("₱", format(total_revenue, big.mark = ",", nsmall = 2)), 
+  style = "margin: 5px 0; font-size: 1.1em; color: #7B3F00;")
+              ),
+              div(
+                p(strong("Total Profit:"), style = "margin: 5px 0;"),
+                p(paste0("₱", format(total_profit, big.mark = ",", nsmall = 2)), 
+                  style = "margin: 5px 0; font-size: 1.1em; color: #D2691E;")
+              )
+          ),
+          div(style = "display: flex; justify-content: space-between; margin-top: 10px;",
+              div(
+                p(strong("Profit Margin:"), style = "margin: 5px 0;"),
+                p(paste0(profit_margin, "%"), 
+                  style = "margin: 5px 0; font-size: 1.1em; color: #A0522D;")
+              ),
+              div(
+                p(strong("Total Cost:"), style = "margin: 5px 0;"),
+                p(paste0("₱", format(total_cost, big.mark = ",", nsmall = 2)), 
+                  style = "margin: 5px 0; font-size: 1.1em; color: #CD853F;")
+              )
+          )
+        )
+      ),
+      column(6,
+        div(
+          class = "summary-card",
+          style = "background-color: #FFF; border-radius: 8px; padding: 15px; margin-bottom: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);",
+          h4("Products & Sales", style = "color: #7B3F00; border-bottom: 1px solid #DEB887; padding-bottom: 5px;"),
+          div(style = "display: flex; justify-content: space-between;",
+              div(
+                p(strong("Total Products Sold:"), style = "margin: 5px 0;"),
+                p(format(total_products_sold, big.mark = ","), 
+                  style = "margin: 5px 0; font-size: 1.1em; color: #7B3F00;")
+              ),
+              div(
+                p(strong("Unique Products:"), style = "margin: 5px 0;"),
+                p(format(length(unique(data$Product)), big.mark = ","), 
+                  style = "margin: 5px 0; font-size: 1.1em; color: #D2691E;")
+              )
+          ),
+          div(style = "display: flex; justify-content: space-between; margin-top: 10px;",
+              div(
+                p(strong("Top Category:"), style = "margin: 5px 0;"),
+                p(top_category, 
+                  style = "margin: 5px 0; font-size: 1.1em; color: #A0522D;")
+              ),
+              div(
+                p(strong("Top Product:"), style = "margin: 5px 0;"),
+                p(top_product, 
+                  style = "margin: 5px 0; font-size: 1.1em; color: #CD853F;")
+              )
+          )
+        )
+      )
+    ),
+    
+    div(
+      class = "summary-card",
+      style = "background-color: #FFF; border-radius: 8px; padding: 15px; margin-bottom: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);",
+      h4("Performance Metrics", style = "color: #7B3F00; border-bottom: 1px solid #DEB887; padding-bottom: 5px;"),
+      
+      fluidRow(
+        column(4,
+          div(style = "text-align: center;",
+              h3(paste0("₱", format(round(total_revenue / length(unique(data$Date))), big.mark = ",")), 
+                 style = "color: #7B3F00; margin: 5px 0;"),
+              p("Average Daily Revenue", style = "color: #666; font-size: 0.9em;")
+          )
+        ),
+        column(4,
+          div(style = "text-align: center;",
+              h3(paste0("₱", format(round(total_profit / length(unique(data$Date))), big.mark = ",")), 
+                 style = "color: #D2691E; margin: 5px 0;"),
+              p("Average Daily Profit", style = "color: #666; font-size: 0.9em;")
+          )
+        ),
+        column(4,
+          div(style = "text-align: center;",
+              h3(format(round(total_products_sold / length(unique(data$Date))), big.mark = ","), 
+                 style = "color: #A0522D; margin: 5px 0;"),
+              p("Average Daily Products Sold", style = "color: #666; font-size: 0.9em;")
+          )
+        )
+      )
+    ),
+    
+    div(
+      class = "report-footer",
+      style = "text-align: center; font-style: italic; color: #666; margin-top: 20px;",
+      p("This report was generated on ", strong(format(Sys.time(), "%B %d, %Y at %H:%M")))
+    )
+  )
+})
+
+# Print reports functionality
+observeEvent(input$printReport, {
+  # Add print functionality
+  sendCustomMessage("printReport", list())
+})
+
+# Add custom JavaScript for printing
+tags$script("
+  Shiny.addCustomMessageHandler('printReport', function(message) {
+    setTimeout(function() {
+      window.print();
+    }, 300);
+  });
+")
+
+# Filter sales data by date range
+filtered_sales <- reactive({
+  data <- sales_reactive()
+  
+  if (nrow(data) == 0) {
+    return(data)
+  }
+  
+  # Convert date strings to Date objects
+  data$Date <- as.Date(data$Date)
+  
+  # Apply date filter if specified
+  if (!is.null(input$dateRange)) {
+    start_date <- input$dateRange[1]
+    end_date <- input$dateRange[2]
+    
+    data <- data %>%
+      filter(Date >= start_date & Date <= end_date)
+  }
+  
+  return(data)
+})
+
+# Update all visualizations based on date filter
+observe({
+  # The filtered data will be used by all plots and tables
+  filtered_data <- filtered_sales()
+  
+  # No need to do anything else here, as the individual render functions
+  # will use the filtered_sales() reactive
+})
+
+# Help button functionality
+observeEvent(input$helpButton, {
+  showModal(modalDialog(
+    title = "Help & Instructions",
+    
+    h4("Welcome to the Sari-Sari Store Management System!"),
+    
+    h5("Recording Sales"),
+    p("1. Select a product category from the dropdown menu."),
+    p("2. Choose a specific product (or enter custom details for 'Others')."),
+    p("3. Enter the quantity sold."),
+    p("4. Verify the unit cost and selling price."),
+    p("5. Click 'Save Sale' to record the transaction."),
+    
+    h5("Managing Sales Records"),
+    p("• View all sales in the table below the entry form."),
+    p("• Delete records by selecting a row and clicking 'Delete'."),
+    p("• Use 'Undo' and 'Redo' buttons to correct mistakes."),
+    p("• Filter data by date range using the calendar picker."),
+    
+    h5("Reports & Visualization"),
+    p("• The dashboard shows sales by category, top products, and daily trends."),
+    p("• Export data to Excel for external analysis."),
+    p("• Generate and print summary reports."),
+    
+    h5("Custom Products"),
+    p("• For items not in the predefined list, select 'J. Others' category."),
+    p("• Enter a custom product name and set the cost/price manually."),
+    
+    easyClose = TRUE,
+    footer = modalButton("Close")
+  ))
+})
+
+# About button functionality
+observeEvent(input$aboutButton, {
+  showModal(modalDialog(
+    title = "About This Application",
+    
+    div(style = "text-align: center;",
+        img(src = "sari_sari_store_logo.png", height = "120px"),
+        h3("Sari-Sari Store Management System"),
+        p("Version 1.0.0")
+    ),
+    
+    p("This application was developed to help small Sari-Sari store owners manage their sales, 
+      inventory, and financial records efficiently."),
+    
+    h4("Features:"),
+    tags$ul(
+      tags$li("Sales tracking and management"),
+      tags$li("Product categorization"),
+      tags$li("Financial reporting and visualization"),
+      tags$li("Data export and printing capabilities"),
+      tags$li("User-friendly interface designed for small business owners")
+    ),
+    
+    p("Developed using R Shiny and modern web technologies."),
+    
+    h4("Data Privacy:"),
+    p("All data is stored locally on your computer and is not shared with any external servers."),
+    
+    div(style = "text-align: center; margin-top: 20px;",
+        p("© 2023 Sari-Sari Store Management System", style = "color: #666;"),
+        p("For support or feedback, contact: support@sarisarisystem.com", style = "color: #666; font-size: 0.9em;")
+    ),
+    
+    easyClose = TRUE,
+    footer = modalButton("Close")
+  ))
+})
+
+# Initialize session with default values
+observe({
+  # This runs once when the session starts
+  if (session$userData$initialized)
+    return()
+  
+  # Set the date to today by default
+  updateDateInput(session, "dateInput", value = Sys.Date())
+  
+  # Mark as initialized
+  session$userData$initialized <- TRUE
+})
+                
+             
