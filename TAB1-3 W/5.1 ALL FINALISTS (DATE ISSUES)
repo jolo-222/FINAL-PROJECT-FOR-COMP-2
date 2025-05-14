@@ -508,7 +508,7 @@ ui <- page_sidebar(
     tabsetPanel(
       id = "tabs",
       tabPanel(
-        title = "📋 Transactions", 
+        title = "📋 LOAD & GCASH IN/OUT TRANSACTIONS", 
         value = "transactions",
         
         # Transactions tab content
@@ -522,7 +522,7 @@ ui <- page_sidebar(
       ),
       
       tabPanel(
-        title = "🛒 Product Sales", 
+        title = "🛒 Product Sales Records", 
         value = "sales",
         
         # Product Sales tab content
@@ -624,7 +624,7 @@ ui <- page_sidebar(
       ),
       
       tabPanel(
-        title = "📊 Analytics", 
+        title = "📊 Summary Analytics", 
         value = "statistics",
         
         # Statistics and visualizations tab content
