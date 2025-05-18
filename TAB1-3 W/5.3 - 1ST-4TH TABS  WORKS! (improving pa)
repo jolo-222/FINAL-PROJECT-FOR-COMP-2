@@ -232,7 +232,7 @@ ui <- shinyUI(
                     div(class="sidebar-right", numericInput("unit_price", "Unit Price:", value=0, width="100%"))
                 ),
                 numericInput("quantity", "Quantity:", value=1, min=1, width="100%"),
-                actionButton("add_sale", "Add Sale", class="btn btn-primary", width="100%"),
+                actionButton("add_sale", "Add Sale", class="btn btn-primary", width="100%"), # Notification fix below
                 actionButton("undo", "Undo", class="btn btn-dark", width="48%"),
                 actionButton("redo", "Redo", class="btn btn-dark", width="48%"),
                 actionButton("delete_sale", "Delete Sale", class="btn btn-warning", width="100%"),
@@ -314,19 +314,15 @@ server <- function(input, output, session) {
   # ========== CALCULATOR LOGIC ===============
   # -------------------------------------------
   runjs("
-    var calcVisible = false;
-    $('#floating-calc-btn').on('click', function() {
-      if(calcVisible) {
-        $('#floating-calc-panel').hide('slide', {direction: 'down'}, 250);
-        calcVisible = false;
-      } else {
-        $('#floating-calc-panel').show('slide', {direction: 'up'}, 250);
-        calcVisible = true;
-      }
+    // Hide calculator initially
+    $('#floating-calc-panel').hide();
+    // Toggle calculator on button click
+    $(document).on('click', '#floating-calc-btn', function() {
+      $('#floating-calc-panel').stop(true, true).fadeToggle(200);
     });
     // Calculator logic
     var calcVal = '';
-    $('#floating-calc-panel .calculator-buttons button').on('click', function() {
+    $(document).on('click', '#floating-calc-panel .calculator-buttons button', function() {
       var b = $(this).data('btn');
       if(b==='C') { calcVal=''; }
       else if(b==='=') {
@@ -337,7 +333,7 @@ server <- function(input, output, session) {
       $('#calc-input').val(calcVal);
     });
   ")
-
+  
   # -------------------------------------------
   # ========== TRANSACTIONS TAB ===============
   # -------------------------------------------
@@ -354,12 +350,12 @@ server <- function(input, output, session) {
     write.csv(df, data_file, row.names = FALSE)
     data(df)
   }
-
+  
   observeEvent(input$submit, {
     req(input$customer_name, input$mobile, input$totalamount)
     mobile_digits <- gsub("[^0-9]", "", input$mobile)
     if (nchar(mobile_digits) != 11) {
-      showNotification("❌ Invalid mobile number!", type = "error")
+      showNotification("❌ Invalid mobile number!", type = "error", duration = 5)
       return()
     }
     profit <- if(input$type == "Load") {
@@ -412,9 +408,9 @@ server <- function(input, output, session) {
     updateTextInput(session, "customer_name", value = "")
     updateTextInput(session, "mobile", value = "")
     updateNumericInput(session, "totalamount", value = 0)
-    showNotification("✅ Transaction Saved!", type = "message")
+    showNotification("✅ Transaction Saved!", type = "message", duration = 5)
   })
-
+  
   observeEvent(input$deleterow, {
     req(input$data_table_rows_selected)
     selected_row <- input$data_table_rows_selected
@@ -422,10 +418,10 @@ server <- function(input, output, session) {
     if(length(selected_row)>0 && nrow(df)>=selected_row) {
       df <- df[-selected_row, ]
       save_data(df)
-      showNotification("🗑️ Deleted successfully!", type="message")
+      showNotification("🗑️ Deleted successfully!", type="message", duration = 5)
     }
   })
-
+  
   observeEvent(input$clearhistory, {
     empty_df <- data.frame(
       Date = as.Date(character()),
@@ -438,18 +434,18 @@ server <- function(input, output, session) {
     )
     write.csv(empty_df, data_file, row.names = FALSE)
     data(empty_df)
-    showNotification("🧹 History cleared successfully!", type = "message")
+    showNotification("🧹 History cleared successfully!", type = "message", duration = 5)
   })
-
+  
   output$data_table <- renderDT({
     datatable(data(), escape=FALSE, selection="single") # single for delete
   })
-
+  
   output$downloadData <- downloadHandler(
     filename = function() { paste("transactions-", Sys.Date(), ".csv", sep = "") },
     content = function(file) { write.csv(data(), file, row.names = FALSE) }
   )
-
+  
   observeEvent(input$undoBtn, {
     if (length(history_stack$data) > 0) {
       last_state <- tail(history_stack$data, 1)[[1]]
@@ -457,9 +453,9 @@ server <- function(input, output, session) {
       redo_stack$data <- append(redo_stack$data, list(data()))
       write.csv(last_state, data_file, row.names = FALSE)
       data(last_state)
-      showNotification("↩️ Undo successful!", type = "message")
+      showNotification("↩️ Undo successful!", type = "message", duration = 5)
     } else {
-      showNotification("⚠️ Nothing to undo!", type = "warning")
+      showNotification("⚠️ Nothing to undo!", type = "warning", duration = 5)
     }
   })
   observeEvent(input$redoBtn, {
@@ -469,12 +465,12 @@ server <- function(input, output, session) {
       history_stack$data <- append(history_stack$data, list(data()))
       write.csv(next_state, data_file, row.names = FALSE)
       data(next_state)
-      showNotification("🔁 Redo successful!", type = "message")
+      showNotification("🔁 Redo successful!", type = "message", duration = 5)
     } else {
-      showNotification("⚠️ Nothing to redo!", type = "warning")
+      showNotification("⚠️ Nothing to redo!", type = "warning", duration = 5)
     }
   })
-
+  
   # -------------------------------------------
   # ========== PRODUCT SALES TAB ==============
   # -------------------------------------------
@@ -489,7 +485,7 @@ server <- function(input, output, session) {
     rv$sales_data <- dat
     saveRDS(dat, saveDataPath)
   }
-
+  
   observe({
     selected_category <- input$category
     if (selected_category == "Others") {
@@ -508,7 +504,7 @@ server <- function(input, output, session) {
       })
     }
   })
-
+  
   observe({
     selected_category <- input$category
     if (!is.null(selected_category) && selected_category != "Others" && !is.null(input$product)) {
@@ -521,7 +517,7 @@ server <- function(input, output, session) {
     }
     # For "Others", update from inputs only
   })
-
+  
   observeEvent(input$add_sale, {
     if (input$category == "Others") {
       req(input$sale_date, input$other_product_name, input$other_unit_cost, input$other_unit_price, input$quantity)
@@ -535,7 +531,7 @@ server <- function(input, output, session) {
       unit_price <- input$unit_price
     }
     q <- input$quantity
-    if(q<=0) { showNotification("Quantity must be > 0", type="error"); return() }
+    if(q<=0) { showNotification("Quantity must be > 0", type="error", duration = 5); return() }
     profit <- (unit_price - unit_cost) * q
     new_sale <- data.frame(
       Date = as.Date(input$sale_date), # respect editable date
@@ -550,9 +546,9 @@ server <- function(input, output, session) {
     updated_sales <- rbind(rv$sales_data, new_sale)
     save_sales_data(updated_sales)
     updateNumericInput(session, "quantity", value=1)
-    showNotification("✅ Sale added successfully!", type = "message")
+    showNotification("✅ Sale added successfully!", type = "message", duration = 5)
   })
-
+  
   observeEvent(input$undo, {
     if (length(rv$history) > 0) {
       last_state <- tail(rv$history, 1)[[1]]
@@ -560,9 +556,9 @@ server <- function(input, output, session) {
       rv$redo <- append(rv$redo, list(rv$sales_data))
       rv$sales_data <- last_state
       saveRDS(last_state, saveDataPath)
-      showNotification("↩️ Undo successful!", type = "message")
+      showNotification("↩️ Undo successful!", type = "message", duration = 5)
     } else {
-      showNotification("⚠️ Nothing to undo!", type = "warning")
+      showNotification("⚠️ Nothing to undo!", type = "warning", duration = 5)
     }
   })
   observeEvent(input$redo, {
@@ -572,12 +568,12 @@ server <- function(input, output, session) {
       rv$history <- append(rv$history, list(rv$sales_data))
       rv$sales_data <- next_state
       saveRDS(next_state, saveDataPath)
-      showNotification("🔁 Redo successful!", type = "message")
+      showNotification("🔁 Redo successful!", type = "message", duration = 5)
     } else {
-      showNotification("⚠️ Nothing to redo!", type = "warning")
+      showNotification("⚠️ Nothing to redo!", type = "warning", duration = 5)
     }
   })
-
+  
   observeEvent(input$delete_sale, {
     req(input$sales_table_rows_selected)
     srow <- input$sales_table_rows_selected
@@ -585,10 +581,10 @@ server <- function(input, output, session) {
     if(length(srow)>0 && nrow(dat)>=srow) {
       dat <- dat[-srow, ]
       save_sales_data(dat)
-      showNotification("🗑️ Sale deleted successfully!", type = "message")
+      showNotification("🗑️ Sale deleted successfully!", type = "message", duration = 5)
     }
   })
-
+  
   observeEvent(input$clear_sales, {
     showModal(modalDialog(
       title = "Confirm Clear All Sales",
@@ -612,9 +608,9 @@ server <- function(input, output, session) {
     )
     save_sales_data(empty_df)
     removeModal()
-    showNotification("🧹 All sales data cleared!", type = "message")
+    showNotification("🧹 All sales data cleared!", type = "message", duration = 5)
   })
-
+  
   output$export_excel <- downloadHandler(
     filename = function() { paste("sales-data-", Sys.Date(), ".xlsx", sep = "") },
     content = function(file) { write_xlsx(rv$sales_data, file) }
@@ -623,7 +619,7 @@ server <- function(input, output, session) {
     filename = function() { paste("sales-data-", Sys.Date(), ".csv", sep = "") },
     content = function(file) { write.csv(rv$sales_data, file, row.names = FALSE) }
   )
-
+  
   filtered_sales <- reactive({
     sales_df <- rv$sales_data
     if (nrow(sales_df) == 0) return(sales_df)
@@ -645,7 +641,7 @@ server <- function(input, output, session) {
     }
     return(sales_df)
   })
-
+  
   sales_summary <- reactive({
     sales_df <- filtered_sales()
     if (nrow(sales_df) == 0) {
@@ -663,7 +659,7 @@ server <- function(input, output, session) {
     total_profit <- sum(sales_df$Profit)
     return(list(today=today_sales, weekly=weekly_sales, monthly=monthly_sales, total_profit=total_profit))
   })
-
+  
   output$summary_table <- renderDT({
     sales_df <- filtered_sales()
     if (nrow(sales_df) == 0) return(data.frame(Category=character(), `Total Sales`=numeric(), `Total Profit`=numeric(), `Items Sold`=numeric()))
@@ -674,7 +670,7 @@ server <- function(input, output, session) {
     datatable(summary_df, options = list(pageLength=5, dom='tip', ordering=TRUE), rownames=FALSE) %>%
       formatCurrency(c("Total Sales", "Total Profit"), currency="₱", digits=2)
   })
-
+  
   output$sales_table <- renderDT({
     sales_df <- filtered_sales()
     if (nrow(sales_df) == 0) return(sales_df)
@@ -684,7 +680,7 @@ server <- function(input, output, session) {
     datatable(display_df, options=list(pageLength=10, order=list(list(0, 'desc')), dom='rtip'), selection='single', rownames=FALSE) %>%
       formatCurrency(c("Unit Cost", "Unit Price", "Total", "Profit"), currency="₱", digits=2)
   })
-
+  
   output$category_chart <- renderPlotly({
     sales_df <- filtered_sales()
     if (nrow(sales_df) == 0) return(NULL)
@@ -707,12 +703,12 @@ server <- function(input, output, session) {
             text=~paste(Product, "\n₱", format(Total, big.mark=",", digits=2))) %>%
       layout(showlegend=FALSE, margin=list(l=20,r=20,t=30,b=0), hovermode="closest")
   })
-
+  
   output$today_sales <- renderText({ summary <- sales_summary(); paste0("₱", format(summary$today, big.mark=",", digits=2)) })
   output$weekly_sales <- renderText({ summary <- sales_summary(); paste0("₱", format(summary$weekly, big.mark=",", digits=2)) })
   output$monthly_sales <- renderText({ summary <- sales_summary(); paste0("₱", format(summary$monthly, big.mark=",", digits=2)) })
   output$total_profit <- renderText({ summary <- sales_summary(); paste0("₱", format(summary$total_profit, big.mark=",", digits=2)) })
-
+  
   # -------------------------------------------
   # ========== STATISTICS TAB =================
   # -------------------------------------------
@@ -733,7 +729,7 @@ server <- function(input, output, session) {
     combined <- rbind(if(nrow(transactions)>0) transactions else NULL, if(nrow(sales)>0) sales else NULL)
     return(combined)
   })
-
+  
   output$total_revenue <- renderText({ data <- combined_data(); if(nrow(data)==0) return("₱0"); total <- sum(data$Revenue); paste0("₱", format(total, big.mark=",", digits=2)) })
   output$stats_total_profit <- renderText({ data <- combined_data(); if(nrow(data)==0) return("₱0"); total <- sum(data$Profit); paste0("₱", format(total, big.mark=",", digits=2)) })
   output$transaction_count <- renderText({ data <- combined_data(); if(nrow(data)==0) return("0"); count <- nrow(data); format(count, big.mark=",") })
@@ -802,7 +798,7 @@ server <- function(input, output, session) {
       formatCurrency(c("Total Revenue","Total Profit"), currency="₱", digits=2) %>%
       formatPercentage("Profit Margin (%)", digits=1)
   })
-
+  
   # -------------------------------------------
   # ========== SETTINGS TAB ===================
   # -------------------------------------------
@@ -833,7 +829,7 @@ server <- function(input, output, session) {
     ) %>% arrange(desc(`Total Profit`))
     datatable(summary_df, options=list(pageLength=5, dom='tip', ordering=TRUE), rownames=FALSE)
   })
-
+  
   # Download ALL as CSV/EXCEL
   output$download_all_csv <- downloadHandler(
     filename = function() paste0("all_data-", Sys.Date(), ".csv"),
