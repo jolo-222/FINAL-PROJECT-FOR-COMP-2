@@ -412,7 +412,7 @@ ui <- shinyUI(
                 div(style="margin-bottom:22px",
                     tags$b(style="text-transform:uppercase;", dateInput("sale_date", "DATE", value=Sys.Date(), width="100%"))
                 ),
-                div(style="margin-bottom:20px",
+                div(style="margin-bottom:20px;",
                     tags$b(style="text-transform:uppercase;", selectizeInput(
                       "category", "CATEGORY:",
                       choices=categories,
@@ -421,10 +421,7 @@ ui <- shinyUI(
                     ))
                 ),
                 uiOutput("product_ui"),
-                div(class="sidebar-row",
-                    div(class="sidebar-left", tags$b(style="text-transform:uppercase;", numericInput("unit_cost", "UNIT COST:", value=0, width="100%"))),
-                    div(class="sidebar-right", tags$b(style="text-transform:uppercase;", numericInput("unit_price", "UNIT PRICE:", value=0, width="100%")))
-                ),
+                # Removed the extra unit_cost/unit_price fields for "Others" here!
                 tags$b(style="text-transform:uppercase;", numericInput("quantity", "QUANTITY:", value=1, min=1, width="100%")),
                 actionButton("add_sale", HTML("<b>➕ ADD SALE</b>"), class="btn btn-primary", width="100%"),
                 actionButton("undo", HTML("<b>↩️ UNDO</b>"), class="btn btn-dark", width="100%"),
@@ -821,10 +818,11 @@ server <- function(input, output, session) {
     rv$sales_data <- dat
     saveRDS(dat, saveDataPath)
   }
+  
   # PRODUCT UI: "Others" (J. Others) with blank text/type box
   observe({
     selected_category <- input$category
-    if (selected_category == "Others" || grepl("others", tolower(selected_category))) {
+    if (!is.null(selected_category) && (selected_category == "Others" || grepl("others", tolower(selected_category)))) {
       output$product_ui <- renderUI({
         tagList(
           textInput("other_product_name", "Product Name (Others):", width="100%"),
@@ -832,18 +830,21 @@ server <- function(input, output, session) {
           numericInput("other_unit_price", "Unit Price:", value=0, width="100%")
         )
       })
-    } else {
+    } else if (!is.null(selected_category)) {
       products <- product_data[[selected_category]]$`Product Name`
       output$product_ui <- renderUI({
         selectizeInput("product", "Product Name:",
                        choices=products, width="100%",
                        options=list(dropdownParent='body', maxOptions=100, maxItems=1))
       })
+    } else {
+      output$product_ui <- renderUI({ NULL })
     }
   })
+  
   observe({
     selected_category <- input$category
-    if (!is.null(selected_category) && selected_category != "Others" && !is.null(input$product)) {
+    if (!is.null(selected_category) && selected_category != "Others" && !grepl("others", tolower(selected_category)) && !is.null(input$product)) {
       product_df <- product_data[[selected_category]]
       idx <- which(product_df$`Product Name`==input$product)
       if(length(idx)>0) {
@@ -852,8 +853,9 @@ server <- function(input, output, session) {
       }
     }
   })
+  
   observeEvent(input$add_sale, {
-    if (input$category == "Others" || grepl("others", tolower(input$category))) {
+    if (!is.null(input$category) && (input$category == "Others" || grepl("others", tolower(input$category)))) {
       req(input$sale_date, input$other_product_name, input$other_unit_cost, input$other_unit_price, input$quantity)
       product <- input$other_product_name
       unit_cost <- input$other_unit_cost
@@ -1313,5 +1315,4 @@ server <- function(input, output, session) {
     })
   })
 }
-
 shinyApp(ui=ui, server=server)
